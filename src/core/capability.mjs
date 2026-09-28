@@ -2,7 +2,7 @@
  * @file capability.mjs
  * Dynamic Capability Engine (JEV Primitive) for Brumm.
  * Issues ephemeral, audience-bound, cryptographically signed capability leases
- * with single-use nonce replay defense and TOCTOU policy-hash binding.
+ * with atomic single-use nonce consumption and TOCTOU policy-hash binding.
  */
 
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
@@ -12,14 +12,49 @@ import { DecisionOutcome } from './decision.mjs';
 import { CapabilitySecurityError } from './errors.mjs';
 import { normalizeActionRequest, normalizeAgentContext } from './identity.mjs';
 
-// Default session signing secret generated at module load if not provided
-const DEFAULT_SESSION_KEY = randomBytes(32).toString('hex');
+let devEphemeralKey = null;
+
+/**
+ * Resolves the HMAC-SHA256 signing key.
+ * In production mode, an explicit key is mandatory (min 32 chars) to prevent
+ * process-restart token invalidation or cross-process verification failures.
+ *
+ * @param {string} [providedKey]
+ * @param {boolean} [isProduction]
+ * @returns {string}
+ */
+export function resolveSigningKey(
+  providedKey,
+  isProduction = process.env.NODE_ENV === 'production'
+) {
+  if (providedKey && typeof providedKey === 'string' && providedKey.trim().length >= 32) {
+    return providedKey.trim();
+  }
+
+  const envKey = process.env.BRUMM_SIGNING_KEY;
+  if (envKey && envKey.trim().length >= 32) {
+    return envKey.trim();
+  }
+
+  if (isProduction) {
+    throw new CapabilitySecurityError(
+      'Production security violation: BRUMM_SIGNING_KEY environment variable or options.signingKey (min 32 characters) is mandatory in production mode. Ephemeral keys are strictly forbidden.',
+      'MISSING_SIGNING_KEY'
+    );
+  }
+
+  // Development / Test fallback
+  if (!devEphemeralKey) {
+    devEphemeralKey = randomBytes(32).toString('hex');
+  }
+  return devEphemeralKey;
+}
 
 /**
  * In-memory registry for consumed nonces to prevent replay attacks.
  * Includes automatic expiration cleanup to prevent unbounded growth.
  */
-class NonceTracker {
+export class NonceTracker {
   constructor() {
     /** @type {Map<string, number>} nonce -> expiresAt */
     this.consumed = new Map();
@@ -36,19 +71,35 @@ class NonceTracker {
   }
 
   /**
-   * Consumes a nonce, marking it as used until expiresAt.
+   * Atomically checks and consumes a nonce in a single synchronous operation.
+   * Prevents TOCTOU race conditions between concurrent verifications.
+   *
+   * @param {string} nonce
+   * @param {number} expiresAt Timestamp in ms
+   * @returns {boolean} true if successfully consumed, false if already consumed
+   */
+  atomicConsume(nonce, expiresAt) {
+    this.purgeExpired();
+    if (this.consumed.has(nonce)) {
+      return false;
+    }
+    this.consumed.set(nonce, expiresAt);
+    return true;
+  }
+
+  /**
+   * Consumes a nonce, throwing an error if already consumed.
    * @param {string} nonce
    * @param {number} expiresAt Timestamp in ms
    */
   consume(nonce, expiresAt) {
-    this.purgeExpired();
-    if (this.consumed.has(nonce)) {
+    const success = this.atomicConsume(nonce, expiresAt);
+    if (!success) {
       throw new CapabilitySecurityError(
         `Replay attack detected: Nonce "${nonce}" has already been consumed`,
         'REPLAY_ATTACK_DETECTED'
       );
     }
-    this.consumed.set(nonce, expiresAt);
   }
 
   /**
@@ -96,7 +147,7 @@ export function signCapabilityPayload(payload, secretKey) {
  * @param {number} [params.options.ttlSeconds=60] Lease lifetime in seconds (1 to 300s)
  * @param {string} [params.options.signingKey] Secret HMAC signing key
  * @returns {object} Deeply immutable Capability Lease
- * @throws {CapabilitySecurityError} If decision is denied or parameters invalid
+ * @throws {CapabilitySecurityError} If decision is denied or constraints unfulfilled
  */
 export function issueCapability({
   decision,
@@ -108,7 +159,7 @@ export function issueCapability({
     throw new CapabilitySecurityError('Decision object is required to issue capability', 'INVALID_DECISION');
   }
 
-  // Only ALLOW or CONSTRAIN decisions can yield executable capabilities
+  // 1. Only ALLOW or CONSTRAIN decisions can yield capabilities
   if (decision.outcome !== DecisionOutcome.ALLOW && decision.outcome !== DecisionOutcome.CONSTRAIN) {
     throw new CapabilitySecurityError(
       `Cannot issue capability for decision outcome: "${decision.outcome}". Action must be permitted or constrained.`,
@@ -119,6 +170,23 @@ export function issueCapability({
   const normContext = normalizeAgentContext(context);
   const normRequest = normalizeActionRequest(request);
 
+  // 2. Enforce CONSTRAIN transformation prerequisites
+  if (decision.outcome === DecisionOutcome.CONSTRAIN) {
+    if (decision.constraints?.requireSnapshot && !normRequest.hasSnapshot) {
+      throw new CapabilitySecurityError(
+        'Cannot issue execution capability for CONSTRAIN decision: prerequisite transformation step (SNAPSHOT) has not been completed. Create snapshot before requesting execution capability.',
+        'PREREQUISITE_TRANSFORMATION_REQUIRED'
+      );
+    }
+
+    if (decision.constraints?.dryRunOnly && !normRequest.isDryRun) {
+      throw new CapabilitySecurityError(
+        'Cannot issue execution capability for CONSTRAIN decision: dry-run verification is required before live execution.',
+        'DRY_RUN_VERIFICATION_REQUIRED'
+      );
+    }
+  }
+
   const ttlSeconds = typeof options.ttlSeconds === 'number'
     ? Math.max(1, Math.min(300, Math.floor(options.ttlSeconds)))
     : 60;
@@ -127,7 +195,7 @@ export function issueCapability({
   const expiresAt = now + (ttlSeconds * 1000);
   const nonce = randomBytes(16).toString('hex');
   const id = `cap_${randomUUID()}`;
-  const signingKey = options.signingKey || DEFAULT_SESSION_KEY;
+  const signingKey = resolveSigningKey(options.signingKey);
 
   const unsignedPayload = {
     id,
@@ -164,6 +232,7 @@ export function issueCapability({
 
 /**
  * Verifies the validity, integrity, audience binding, and bounds of a capability lease.
+ * When consume is true (default), atomically checks and consumes the nonce.
  *
  * @param {object} capability The capability token to verify
  * @param {object} currentPolicy Active compiled policy
@@ -171,6 +240,7 @@ export function issueCapability({
  * @param {object|string} rawContext Incoming agent context
  * @param {object} [options]
  * @param {string} [options.signingKey] Signing key used during issuance
+ * @param {boolean} [options.consume=false] Whether to atomically consume the nonce during verification
  * @param {NonceTracker} [options.nonceTracker] Optional custom nonce tracker
  * @returns {{ valid: boolean, code?: string, error?: string }}
  */
@@ -185,7 +255,7 @@ export function verifyCapability(
     return { valid: false, code: 'INVALID_CAPABILITY', error: 'Capability must be a non-null object' };
   }
 
-  const signingKey = options.signingKey || DEFAULT_SESSION_KEY;
+  const signingKey = resolveSigningKey(options.signingKey);
   const tracker = options.nonceTracker || globalNonceTracker;
 
   // 1. Verify Cryptographic Signature (Tamper & Forgery Defense)
@@ -205,12 +275,7 @@ export function verifyCapability(
     return { valid: false, code: 'CAPABILITY_EXPIRED', error: `Capability lease expired at ${capability.expiresAt} (current: ${now})` };
   }
 
-  // 3. Verify Replay (Single-Use Nonce Defense)
-  if (tracker.has(capability.nonce)) {
-    return { valid: false, code: 'REPLAY_ATTACK_DETECTED', error: `Capability nonce "${capability.nonce}" has already been consumed` };
-  }
-
-  // 4. Verify TOCTOU Stale Policy Defense (Policy Hash Binding)
+  // 3. Verify TOCTOU Stale Policy Defense (Policy Hash Binding)
   if (currentPolicy && currentPolicy.hash !== capability.policyHash) {
     return {
       valid: false,
@@ -219,7 +284,7 @@ export function verifyCapability(
     };
   }
 
-  // 5. Verify Subject / Audience Binding
+  // 4. Verify Subject / Audience Binding
   const context = normalizeAgentContext(rawContext);
   if (context.agentId !== capability.subject.agentId) {
     return {
@@ -237,7 +302,7 @@ export function verifyCapability(
     };
   }
 
-  // 6. Verify Action & Resource Binding
+  // 5. Verify Action & Resource Binding
   let request;
   try {
     request = normalizeActionRequest(rawRequest);
@@ -261,7 +326,7 @@ export function verifyCapability(
     };
   }
 
-  // 7. Verify Blast Radius Limits Bound in Lease
+  // 6. Verify Blast Radius Limits Bound in Lease
   if (capability.constraints.maxBytes !== null && request.requestedBytes > capability.constraints.maxBytes) {
     return {
       valid: false,
@@ -292,6 +357,27 @@ export function verifyCapability(
       code: 'DRY_RUN_REQUIRED',
       error: 'Capability permits dry-run execution only',
     };
+  }
+
+  // 7. Atomic Replay Check / Consumption
+  if (options.consume === true) {
+    const consumed = tracker.atomicConsume(capability.nonce, capability.expiresAt);
+    if (!consumed) {
+      return {
+        valid: false,
+        code: 'REPLAY_ATTACK_DETECTED',
+        error: `Capability nonce "${capability.nonce}" has already been consumed (replay attack blocked)`,
+      };
+    }
+  } else {
+    // Read-only check without consuming
+    if (tracker.has(capability.nonce)) {
+      return {
+        valid: false,
+        code: 'REPLAY_ATTACK_DETECTED',
+        error: `Capability nonce "${capability.nonce}" has already been consumed`,
+      };
+    }
   }
 
   return { valid: true };
