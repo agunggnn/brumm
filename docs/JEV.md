@@ -4,7 +4,7 @@
 
 **Research / Architecture Concept**
 
-JEV is a proposed execution model for Hetzer.
+JEV is a proposed execution model for Brumm.
 
 The term JEV should not currently be treated as a standardized industry term. Its exact formal definition, acronym expansion, and cryptographic mechanism remain open design questions.
 
@@ -149,7 +149,7 @@ Critical / irreversible
 
 ## Research Requirements
 
-Before JEV is presented as a security primitive, Hetzer should establish:
+Before JEV is presented as a security primitive, Brumm should establish:
 
 - precise terminology
 - formal security properties

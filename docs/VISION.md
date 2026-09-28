@@ -1,8 +1,8 @@
-# Hetzer Vision
+# Brumm Vision
 
 ## From Secret Protection to Agentic Safety
 
-Hetzer starts from a simple problem:
+Brumm starts from a simple problem:
 
 > How can an AI agent use credentials without unnecessarily exposing credentials to the agent?
 
@@ -37,11 +37,11 @@ Data loss.
 
 The agent may not be malicious. The authorization itself was too broad.
 
-## Hetzer
+## Brumm
 
-> **Hetzer is a security boundary for agentic systems.**
+> **Brumm is a security boundary for agentic systems.**
 
-Hetzer sits between an agent and sensitive capabilities.
+Brumm sits between an agent and sensitive capabilities.
 
 It can protect:
 
@@ -77,7 +77,7 @@ The agent should not receive unlimited authority when a constrained capability i
 
 ## Controlled Plaintext
 
-Hetzer cannot make knowledge invisible to a model that must reason over that knowledge.
+Brumm cannot make knowledge invisible to a model that must reason over that knowledge.
 
 If an agent needs to understand a document, relevant content eventually has to be available to the model.
 
@@ -96,7 +96,7 @@ The goal is:
                       |
                       v
                +-------------+
-               |   HETZER    |
+               |        BRUMM        |
                |-------------|
                | Identity    |
                | Policy      |

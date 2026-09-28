@@ -1,8 +1,8 @@
-# Hetzer Examples
+# Brumm Examples
 
 ## Example 1 — Credential Use
 
-### Without Hetzer
+### Without Brumm
 
 ```text
 Agent
@@ -17,14 +17,14 @@ AWS CLI
 
 The secret can enter agent context or logs.
 
-### With Hetzer
+### With Brumm
 
 ```text
 Agent
   |
   | secretRef://prod/aws
   v
-Hetzer
+Brumm
   |
   v
 AWS credential
@@ -45,7 +45,7 @@ Agent asks:
 "What is the architecture decision we made last month?"
 ```
 
-Hetzer evaluates:
+Brumm evaluates:
 
 ```text
 identity
@@ -72,7 +72,7 @@ Production requires two approvals.
 AWS_SECRET_ACCESS_KEY=...
 ```
 
-Hetzer:
+Brumm:
 
 ```text
 Deployment policy:
@@ -97,7 +97,7 @@ Policy:
 maximum autonomous deletion = 50GB
 ```
 
-Hetzer:
+Brumm:
 
 ```text
 DENY
@@ -133,7 +133,7 @@ Then attempts:
 send_to_external_api(document)
 ```
 
-Hetzer detects:
+Brumm detects:
 
 ```text
 data classification = confidential
@@ -188,7 +188,7 @@ email
 api_token
 ```
 
-Hetzer can transform:
+Brumm can transform:
 
 ```text
 user_id

@@ -27,16 +27,16 @@ The agent may have followed its reasoning correctly.
 
 The failure is that the system gave the agent an unnecessarily large destructive capability.
 
-## Hetzer's Role
+## Brumm's Role
 
-Hetzer should place a safety boundary around consequential actions.
+Brumm should place a safety boundary around consequential actions.
 
 ```text
 Agent
   |
   | delete 700GB
   v
-Hetzer
+Brumm
   |
   +-- identify target
   +-- classify resource
@@ -84,7 +84,7 @@ Action: require approval
 
 ## Safer Transformations
 
-Hetzer should not always simply block.
+Brumm should not always simply block.
 
 It can transform unsafe intent into safer execution.
 

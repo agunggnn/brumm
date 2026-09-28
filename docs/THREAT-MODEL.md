@@ -1,8 +1,8 @@
-# Hetzer Threat Model
+# Brumm Threat Model
 
 ## Scope
 
-Hetzer protects agentic workflows against:
+Brumm protects agentic workflows against:
 
 1. accidental agent mistakes
 2. over-privileged agents
@@ -85,7 +85,7 @@ Important principle:
 
 > Agent instructions are not security policy.
 
-Hetzer must enforce security controls outside the model's own reasoning.
+Brumm must enforce security controls outside the model's own reasoning.
 
 ## Confused Deputy
 
@@ -110,15 +110,15 @@ Potential failures include:
 - race conditions
 - incomplete resource classification
 - inaccurate blast-radius estimation
-- compromised Hetzer
+- compromised Brumm
 - compromised underlying identity provider
 
-Hetzer should explicitly document which threats it can and cannot mitigate.
+Brumm should explicitly document which threats it can and cannot mitigate.
 
 ## Security Boundary
 
-Hetzer itself is trusted infrastructure.
+Brumm itself is trusted infrastructure.
 
-A compromised Hetzer process may bypass protections.
+A compromised Brumm process may bypass protections.
 
-Therefore hardening Hetzer is part of the security model.
+Therefore hardening Brumm is part of the security model.

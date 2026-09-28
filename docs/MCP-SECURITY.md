@@ -19,7 +19,7 @@ Agent
 
 The tool boundary therefore becomes a critical enforcement point.
 
-## Hetzer MCP Proxy
+## Brumm MCP Proxy
 
 Target architecture:
 
@@ -27,7 +27,7 @@ Target architecture:
 Agent
   |
   v
-Hetzer MCP Proxy
+Brumm MCP Proxy
   |
   +-- identity
   +-- policy
@@ -95,7 +95,7 @@ Agent
 send_to_external_service()
 ```
 
-Hetzer should evaluate the outbound operation independently.
+Brumm should evaluate the outbound operation independently.
 
 Reading data does not imply permission to export it.
 
@@ -122,7 +122,7 @@ Destructive tools should support preview where possible.
 Agent request
    |
    v
-Hetzer
+Brumm
    |
    v
 dry-run

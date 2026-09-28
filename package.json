@@ -3,7 +3,26 @@
   "version": "0.1.0",
   "description": "The Denial Smart Boss for AI Agents: Socratic refusal, blast radius containment, and JEV capability governance.",
   "type": "module",
-  "main": "index.mjs",
+  "main": "src/index.mjs",
+  "bin": {
+    "brumm": "./bin/brumm.mjs"
+  },
+  "exports": {
+    ".": "./src/index.mjs",
+    "./core": "./src/core/index.mjs"
+  },
+  "files": [
+    "src",
+    "bin",
+    "LICENSE",
+    "README.md"
+  ],
+  "scripts": {
+    "test": "node --test test/**/*.test.mjs",
+    "test:watch": "node --test --watch test/**/*.test.mjs",
+    "check": "node --check bin/brumm.mjs src/**/*.mjs test/**/*.mjs",
+    "lint": "node --check bin/brumm.mjs src/**/*.mjs"
+  },
   "keywords": [
     "ai-agent",
     "agentic-safety",

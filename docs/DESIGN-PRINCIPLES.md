@@ -46,8 +46,9 @@ A capability can represent bounded authority.
 
 ## 11. Integrate With Existing Security
 
-Hetzer should work with:
+Brumm should work with:
 
+- Hetzer (runtime credential armor & process redactor)
 - Vault
 - 1Password
 - cloud secret managers

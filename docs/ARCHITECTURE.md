@@ -1,8 +1,8 @@
-# Hetzer Target Architecture
+# Brumm Target Architecture
 
 ## Overview
 
-Hetzer should operate as an agent security control plane.
+Brumm should operate as an agent security control plane.
 
 ```text
                          Human
@@ -14,7 +14,7 @@ Hetzer should operate as an agent security control plane.
                            |
                            v
                 +---------------------+
-                |       HETZER        |
+                |        BRUMM        |
                 |---------------------|
                 | Agent Identity      |
                 | Policy Engine       |
@@ -83,7 +83,7 @@ Records security decisions without recording secrets unnecessarily.
 
 ## Important Boundary
 
-Hetzer should not become the underlying system of record for every secret, identity, or infrastructure permission.
+Brumm should not become the underlying system of record for every secret, identity, or infrastructure permission.
 
 Existing systems can remain authoritative:
 
@@ -91,23 +91,23 @@ Existing systems can remain authoritative:
 Vault / 1Password / AWS Secrets Manager
                   |
                   v
-                Hetzer
+                Brumm
                   |
                   v
                 Agent
 ```
 
-This keeps Hetzer focused on the agent boundary.
+This keeps Brumm focused on the agent boundary.
 
 ## Failure Model
 
-If Hetzer cannot establish authorization for a critical operation, the default should be deny.
+If Brumm cannot establish authorization for a critical operation, the default should be deny.
 
 For lower-risk read-only operations, configurable fail-open behavior may be appropriate only when explicitly enabled.
 
 ## Trust Assumption
 
-Hetzer itself becomes part of the trusted computing base.
+Brumm itself becomes part of the trusted computing base.
 
 Therefore:
 

@@ -1,12 +1,12 @@
-# Hetzer Documentation Pack
+# Brumm Documentation Pack
 
-This documentation pack describes the current direction and long-term architecture of Hetzer.
+This documentation pack describes the current direction and long-term architecture of Brumm.
 
 ## Core thesis
 
-> Hetzer is a security boundary for agentic systems.
+> Brumm is a security boundary for agentic systems.
 
-Hetzer should protect not only credentials, but also private knowledge, memory, tool execution, and infrastructure from accidental or unauthorized agent behavior.
+Brumm should protect not only credentials, but also private knowledge, memory, tool execution, and infrastructure from accidental or unauthorized agent behavior.
 
 ## Document map
 

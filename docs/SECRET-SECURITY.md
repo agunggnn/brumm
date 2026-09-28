@@ -1,6 +1,6 @@
 # Secret Security
 
-## Original Hetzer Problem
+## The Credential Exposure Problem
 
 AI agents often need to use credentials.
 
@@ -29,14 +29,14 @@ This exposes secrets to:
 
 ## Zero Plaintext Objective
 
-Hetzer should aim to prevent credentials from entering agent context whenever the operation can be performed without exposing them.
+Brumm should aim to prevent credentials from entering agent context whenever the operation can be performed without exposing them.
 
 ```text
 Agent
   |
   | secretRef: prod/aws
   v
-Hetzer
+Brumm
   |
   v
 Secret Provider
@@ -62,7 +62,7 @@ AKIA...
 
 ## Secret Provider Agnostic
 
-Hetzer should ideally integrate with existing systems instead of replacing them.
+Brumm should ideally integrate with existing systems instead of replacing them.
 
 Potential providers:
 
@@ -93,13 +93,13 @@ Pod
 
 This is primarily secret distribution.
 
-Hetzer solves a different boundary:
+Brumm solves a different boundary:
 
 ```text
 Secret Provider
   |
   v
-Hetzer
+Brumm
   |
   v
 Agent / Tool

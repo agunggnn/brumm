@@ -36,9 +36,9 @@ LLM reasoning
 
 If the model must reason over a document, relevant plaintext must eventually become readable to the model.
 
-## Hetzer Goal
+## Brumm Goal
 
-Hetzer should provide **controlled disclosure**, not pretend that plaintext can be eliminated from all knowledge workflows.
+Brumm should provide **controlled disclosure**, not pretend that plaintext can be eliminated from all knowledge workflows.
 
 The goal is:
 
@@ -77,7 +77,7 @@ The vector database should not be the final authorization layer.
 Agent
   |
   v
-Hetzer
+Brumm
   |
   +-- identity
   +-- task
@@ -104,7 +104,7 @@ Retrieved documents may accidentally contain:
 - connection strings
 - PII
 
-Hetzer should scan retrieved content before passing it to the agent.
+Brumm should scan retrieved content before passing it to the agent.
 
 Example:
 
@@ -115,7 +115,7 @@ Document:
 AWS_ACCESS_KEY_ID=...
 AWS_SECRET_ACCESS_KEY=..."
 
-Hetzer:
+Brumm:
 "Production deployment requires two approvals.
 
 [SECRET REDACTED]"
@@ -156,7 +156,7 @@ Vector DB
 Retrieval
      |
      v
-Hetzer authorization
+Brumm authorization
      |
      v
 Decrypt authorized payload
@@ -169,7 +169,7 @@ Important limitation:
 
 Normal semantic search over strongly encrypted content is non-trivial and may require trade-offs.
 
-Hetzer should not claim "encrypted vector search" without specifying the cryptographic construction and its security properties.
+Brumm should not claim "encrypted vector search" without specifying the cryptographic construction and its security properties.
 
 ## Output Boundary
 
@@ -187,7 +187,7 @@ Agent
 Outbound tool
   |
   v
-Hetzer output guard
+Brumm output guard
   |
   +-- allow
   +-- redact

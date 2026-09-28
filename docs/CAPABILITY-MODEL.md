@@ -2,7 +2,7 @@
 
 ## Objective
 
-Hetzer should explore capability-based authorization for agentic execution.
+Brumm should explore capability-based authorization for agentic execution.
 
 A capability represents a bounded authority.
 
@@ -64,7 +64,7 @@ A credential proves or enables access.
 
 A capability describes a particular authorized operation.
 
-Hetzer should investigate architectures where the agent receives a capability reference rather than a long-lived infrastructure credential.
+Brumm should investigate architectures where the agent receives a capability reference rather than a long-lived infrastructure credential.
 
 ## Security Questions
 

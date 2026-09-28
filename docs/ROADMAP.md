@@ -1,4 +1,4 @@
-# Hetzer Roadmap
+# Brumm Roadmap
 
 ## Strategy
 
@@ -6,7 +6,7 @@ Build incrementally.
 
 Do not attempt to replace Vault, 1Password, cloud IAM, Kubernetes RBAC, PAM, or vector databases.
 
-Hetzer should become the security boundary connecting them to agents.
+Brumm should become the security boundary connecting them to agents.
 
 ---
 
@@ -110,7 +110,7 @@ Target:
                     Agent
                       |
                       v
-                   Hetzer
+                   Brumm
                       |
        +--------------+--------------+
        |              |              |
@@ -123,7 +123,7 @@ Target:
 
 ## Success Criteria
 
-Hetzer should eventually demonstrate:
+Brumm should eventually demonstrate:
 
 ### Secret scenario
 
@@ -137,13 +137,13 @@ Agent can reason over authorized private knowledge while unauthorized memory rem
 
 Agent requests deletion of 700 GB when policy allows 50 GB.
 
-Hetzer prevents the unsafe operation or escalates it.
+Brumm prevents the unsafe operation or escalates it.
 
 ### Exfiltration scenario
 
 Agent reads confidential data and attempts to send it externally.
 
-Hetzer detects and blocks or requires approval.
+Brumm detects and blocks or requires approval.
 
 ### Autonomy scenario
 
@@ -153,7 +153,7 @@ High-risk tasks receive stronger controls.
 
 ## Non-Goals
 
-Hetzer is not intended to become:
+Brumm is not intended to become:
 
 - every secret manager
 - every IAM system

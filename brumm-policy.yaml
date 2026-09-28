@@ -1,0 +1,43 @@
+name: production-safeguards
+version: "1.0"
+defaultEffect: DENY
+
+rules:
+  # 1. Critical asset protection: Deny root wiping
+  - id: deny-root-wipe
+    effect: DENY
+    isCriticalProtection: true
+    agent: "*"
+    action: "delete"
+    resource: "/data/*"
+    environment: "production"
+    reasons:
+      - "Root-level wipe of production data storage is strictly prohibited"
+
+  # 2. Cleanup agent rule: Allowed up to 50GB with snapshot, escalates above 50GB
+  - id: cleanup-agent-policy
+    effect: ALLOW
+    agent: "cleanup-agent"
+    action: "delete"
+    resource: "backup-prod/**"
+    environment: "production"
+    constraints:
+      max_size: "50GB"
+      require_snapshot: true
+      require_approval_above: "50GB"
+
+  # 3. Read operations permitted across non-sensitive zones
+  - id: allow-general-read
+    effect: ALLOW
+    agent: "*"
+    action: "read"
+    resource: "**"
+    environment: "*"
+
+  # 4. Staging environment operations permitted
+  - id: allow-staging-environment
+    effect: ALLOW
+    agent: "*"
+    action: "*"
+    resource: "**"
+    environment: "staging"

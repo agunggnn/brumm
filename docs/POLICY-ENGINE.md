@@ -98,7 +98,7 @@ The exact precedence should be formally specified before implementation.
 A future CLI should support:
 
 ```text
-hetzer policy test \
+brumm policy test \
   --agent cleanup-agent \
   --action delete \
   --resource backup-prod \

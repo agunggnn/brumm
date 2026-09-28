@@ -45,6 +45,70 @@ Agent Action Request (e.g. DELETE 700GB / Request AWS Admin Key)
 
 ---
 
+## 🚀 Quickstart
+
+### 1. Run Policy Simulation CLI
+Test whether an agent action is permitted, constrained, or denied:
+
+```bash
+# Test cleanup agent attempting to delete 700GB in production
+node bin/brumm.mjs policy test \
+  --policy ./brumm-policy.yaml \
+  --agent cleanup-agent \
+  --action delete \
+  --resource backup-prod/cluster-archive \
+  --size 700GB \
+  --env production
+```
+
+Output:
+```text
+Decision: ESCALATE
+Rule:     cleanup-agent-policy
+Policy:   production-safeguards (hash: 8909abff)
+
+Reasons:
+- Requested size (751619276800 bytes) exceeds autonomous approval threshold (53687091200 bytes)
+```
+
+### 2. Programmatic API (`createGuard`)
+
+```javascript
+import { createGuard } from '@agunggnn/brumm';
+
+const guard = createGuard({
+  policy: './brumm-policy.yaml',
+  agent: 'cleanup-agent',
+  environment: 'production',
+});
+
+// Evaluate before invoking any tool call
+const decision = guard.evaluate({
+  action: 'delete',
+  resource: 'backup-prod/old-logs',
+  size: '10GB',
+  hasSnapshot: true,
+});
+
+if (decision.allowed) {
+  // Proceed with execution
+} else if (decision.requiresApproval) {
+  // Escalate to human supervisor
+} else if (decision.isConstrained) {
+  // Enforce required transformation (e.g. create snapshot first)
+}
+```
+
+### 3. Run Test Suite
+Brumm uses the zero-dependency Node 22+ native test runner:
+
+```bash
+npm test
+npm run check
+```
+
+---
+
 ## 📑 Specification & Documentation Index
 
 Brumm is specified across 15 modular architecture blueprints located in [`docs/`](docs/):
