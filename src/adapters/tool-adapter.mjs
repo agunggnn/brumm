@@ -11,6 +11,7 @@ import {
   verifyCapability,
 } from '../core/capability.mjs';
 import { ExecutionSecurityError } from '../core/errors.mjs';
+import { normalizeActionRequest } from '../core/identity.mjs';
 
 /**
  * Creates an Execution Guard that wraps underlying tools and enforces
@@ -39,9 +40,14 @@ export function createExecutionGuard(options = {}) {
      * @returns {Function} Protected executor
      */
     protect(toolName, rawExecutor) {
+      if (typeof toolName !== 'string' || toolName.trim().length === 0) {
+        throw new TypeError('Tool name must be a non-empty string');
+      }
       if (typeof rawExecutor !== 'function') {
         throw new TypeError(`Executor for tool "${toolName}" must be a function`);
       }
+
+      const normalizedTool = toolName.trim().toLowerCase();
 
       return async function protectedExecutor(params = {}, securityContext = {}) {
         const { capability, request, context } = securityContext;
@@ -53,7 +59,25 @@ export function createExecutionGuard(options = {}) {
           );
         }
 
-        // 1. Parameter Substitution Defense:
+        // 1. Tool-to-Capability Action Binding:
+        // Enforce physical execution invariant: toolName === capability.action === verifiedRequest.action
+        if (normalizedTool !== capability.action) {
+          throw new ExecutionSecurityError(
+            `Execution blocked for tool "${toolName}": tool action ("${normalizedTool}") does not match authorized capability action ("${capability.action}")`,
+            'TOOL_ACTION_MISMATCH'
+          );
+        }
+
+        if (request && typeof request === 'object' && request.action !== undefined) {
+          if (typeof request.action !== 'string' || request.action.trim().toLowerCase() !== normalizedTool) {
+            throw new ExecutionSecurityError(
+              `Execution blocked for tool "${toolName}": request action ("${request.action}") does not match tool action ("${normalizedTool}")`,
+              'TOOL_ACTION_MISMATCH'
+            );
+          }
+        }
+
+        // 2. Parameter Substitution Defense:
         // Ensure that all candidate resource parameters present in caller's payload match the authorized capability resource
         const CANDIDATE_RESOURCE_KEYS = [
           'resource',
@@ -124,10 +148,14 @@ export function createExecutionGuard(options = {}) {
           checkResourceTarget('bucket/key', s3Uri);
         }
 
-        // 2. Atomic Verification + Nonce Consumption
+        // 3. Atomic Verification + Nonce Consumption
         const effectiveRequest = request || {
-          action: toolName,
+          action: capability.action,
           resource: capability.resource,
+          size: params.size !== undefined ? params.size : params.requestedBytes,
+          count: params.count !== undefined ? params.count : params.requestedCount,
+          hasSnapshot: params.hasSnapshot !== undefined ? params.hasSnapshot : params.snapshot,
+          isDryRun: params.isDryRun !== undefined ? params.isDryRun : params.dryRun,
         };
 
         const effectiveContext = context || {
@@ -151,7 +179,7 @@ export function createExecutionGuard(options = {}) {
           );
         }
 
-        // 3. Inject verified immutable binding into execution params
+        // 4. Inject verified immutable binding into execution params
         const verifiedExecutionParams = Object.freeze({
           ...params,
           _authorizedResource: capability.resource,
@@ -159,7 +187,7 @@ export function createExecutionGuard(options = {}) {
           _authorizedBounds: Object.freeze({ ...capability.constraints }),
         });
 
-        // 4. Safely execute underlying tool
+        // 5. Safely execute underlying tool
         return await rawExecutor(verifiedExecutionParams, {
           capability,
           verified: true,
@@ -178,8 +206,11 @@ export function createExecutionGuard(options = {}) {
      * @returns {Promise<{ executed: boolean, result?: any, decision: object, capability?: object, constrained?: boolean, error?: string }>}
      */
     async execute(actionRequest, agentContext, rawExecutor) {
+      // Strict request normalization upfront (rejects malformed booleans like "false", 0, etc.)
+      const normRequest = normalizeActionRequest(actionRequest);
+
       // 1. Evaluate policy
-      const decision = guard.evaluate(actionRequest, agentContext);
+      const decision = guard.evaluate(normRequest, agentContext);
 
       // 2. If decision is denied or requires human escalation, block execution
       if (!decision.allowed && !decision.isConstrained) {
@@ -190,12 +221,9 @@ export function createExecutionGuard(options = {}) {
         };
       }
 
-      // 3. If decision is CONSTRAIN, verify transformation prerequisites
+      // 3. If decision is CONSTRAIN, verify transformation prerequisites using strictly normalized booleans
       if (decision.isConstrained) {
-        const hasSnapshot = Boolean(actionRequest.hasSnapshot || actionRequest.snapshot);
-        const isDryRun = Boolean(actionRequest.isDryRun || actionRequest.dryRun);
-
-        if (decision.constraints?.requireSnapshot && !hasSnapshot) {
+        if (decision.constraints?.requireSnapshot && !normRequest.hasSnapshot) {
           return {
             executed: false,
             constrained: true,
@@ -205,7 +233,7 @@ export function createExecutionGuard(options = {}) {
           };
         }
 
-        if (decision.constraints?.dryRunOnly && !isDryRun) {
+        if (decision.constraints?.dryRunOnly && !normRequest.isDryRun) {
           return {
             executed: false,
             constrained: true,
@@ -219,19 +247,19 @@ export function createExecutionGuard(options = {}) {
       // 4. Issue ephemeral dynamic capability lease
       const capability = issueCapability({
         decision,
-        request: actionRequest,
+        request: normRequest,
         context: agentContext,
         options: { signingKey },
       });
 
       // 5. Wrap and execute via protected boundary
-      const protectedTool = this.protect(actionRequest.action, rawExecutor);
+      const protectedTool = this.protect(normRequest.action, rawExecutor);
 
       const result = await protectedTool(
         actionRequest.parameters || {},
         {
           capability,
-          request: actionRequest,
+          request: normRequest,
           context: agentContext,
         }
       );

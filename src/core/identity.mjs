@@ -67,12 +67,16 @@ export function normalizeActionRequest(request) {
     throw new TypeError('Action must be a non-empty string');
   }
 
-  if (typeof request.resource !== 'string' || request.resource.trim().length === 0) {
+  const rawResource = typeof request.resource === 'string'
+    ? request.resource
+    : (typeof request.rawResource === 'string' ? request.rawResource : null);
+
+  if (!rawResource || rawResource.trim().length === 0) {
     throw new TypeError('Resource must be a non-empty string');
   }
 
   const action = request.action.trim().toLowerCase();
-  const canonical = canonicalizeResource(request.resource);
+  const canonical = canonicalizeResource(rawResource);
 
   // Normalize requested bytes: null if omitted, strict parsing if present
   let requestedBytes = null;
@@ -128,7 +132,8 @@ export function normalizeActionRequest(request) {
 
   return {
     action,
-    rawResource: request.resource,
+    resource: rawResource,
+    rawResource,
     canonicalResource: canonical.uri,
     resourcePath: canonical.path,
     resourceScheme: canonical.scheme,

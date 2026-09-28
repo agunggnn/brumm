@@ -486,20 +486,38 @@ export function verifyCapability(
   }
 
   // 8. Verify Blast Radius Limits Bound in Lease
-  if (capability.constraints.maxBytes !== null && request.requestedBytes > capability.constraints.maxBytes) {
-    return {
-      valid: false,
-      code: 'BYTE_LIMIT_EXCEEDED',
-      error: `Requested size (${request.requestedBytes}B) exceeds capability lease limit (${capability.constraints.maxBytes}B)`,
-    };
+  if (capability.constraints.maxBytes !== null) {
+    if (request.requestedBytes === null || request.requestedBytes === undefined) {
+      return {
+        valid: false,
+        code: 'BYTE_MEASUREMENT_REQUIRED',
+        error: `Capability lease bounds byte limit (${capability.constraints.maxBytes}B), but request omitted byte size measurement`,
+      };
+    }
+    if (request.requestedBytes > capability.constraints.maxBytes) {
+      return {
+        valid: false,
+        code: 'BYTE_LIMIT_EXCEEDED',
+        error: `Requested size (${request.requestedBytes}B) exceeds capability lease limit (${capability.constraints.maxBytes}B)`,
+      };
+    }
   }
 
-  if (capability.constraints.maxObjects !== null && request.requestedCount > capability.constraints.maxObjects) {
-    return {
-      valid: false,
-      code: 'OBJECT_LIMIT_EXCEEDED',
-      error: `Requested object count (${request.requestedCount}) exceeds capability lease limit (${capability.constraints.maxObjects})`,
-    };
+  if (capability.constraints.maxObjects !== null) {
+    if (request.requestedCount === null || request.requestedCount === undefined) {
+      return {
+        valid: false,
+        code: 'OBJECT_MEASUREMENT_REQUIRED',
+        error: `Capability lease bounds object count limit (${capability.constraints.maxObjects}), but request omitted object count measurement`,
+      };
+    }
+    if (request.requestedCount > capability.constraints.maxObjects) {
+      return {
+        valid: false,
+        code: 'OBJECT_LIMIT_EXCEEDED',
+        error: `Requested object count (${request.requestedCount}) exceeds capability lease limit (${capability.constraints.maxObjects})`,
+      };
+    }
   }
 
   if (capability.constraints.requireSnapshot && !request.hasSnapshot) {
