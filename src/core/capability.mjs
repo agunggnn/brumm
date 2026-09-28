@@ -5,7 +5,7 @@
  * with atomic single-use nonce consumption and TOCTOU policy-hash binding.
  */
 
-import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { canonicalizeJson, deepFreeze } from './canonical-json.mjs';
 import { canonicalizeResource } from './canonical.mjs';
 import { DecisionOutcome } from './decision.mjs';
@@ -53,6 +53,16 @@ export function resolveSigningKey(
 /**
  * In-memory registry for consumed nonces to prevent replay attacks.
  * Includes automatic expiration cleanup to prevent unbounded growth.
+ *
+ * ARCHITECTURAL NOTICE / DISTRIBUTED DEPLOYMENT CAVEAT:
+ * This NonceTracker implementation is strictly process-local (single Node.js event loop).
+ * In distributed, multi-replica, or serverless architectures, process-local memory cannot
+ * prevent replay across different worker processes or nodes.
+ *
+ * TODO(architecture): For distributed production clusters:
+ * Implement a distributed atomic nonce store backed by a distributed CAS (Compare-And-Swap)
+ * or atomic key-value store (e.g. Redis `SET key 1 NX PX <ttlMs>`, DynamoDB conditional put,
+ * or Memcached `add`).
  */
 export class NonceTracker {
   constructor() {
@@ -104,11 +114,12 @@ export class NonceTracker {
 
   /**
    * Purges nonces that are past their expiration timestamp.
+   * Lease is considered invalid/expired when now >= expiresAt.
    */
   purgeExpired() {
     const now = Date.now();
     for (const [nonce, expiresAt] of this.consumed.entries()) {
-      if (now > expiresAt) {
+      if (now >= expiresAt) {
         this.consumed.delete(nonce);
       }
     }
@@ -251,31 +262,161 @@ export function verifyCapability(
   rawContext,
   options = {}
 ) {
-  if (!capability || typeof capability !== 'object') {
+  // 1. Structural Schema Validation
+  if (!capability || typeof capability !== 'object' || Array.isArray(capability)) {
     return { valid: false, code: 'INVALID_CAPABILITY', error: 'Capability must be a non-null object' };
+  }
+
+  if (capability.version !== '1.0') {
+    return {
+      valid: false,
+      code: 'INVALID_VERSION',
+      error: `Unsupported capability version: "${capability.version}". Expected "1.0"`,
+    };
+  }
+
+  if (capability.issuer !== 'brumm-governance-engine') {
+    return {
+      valid: false,
+      code: 'INVALID_ISSUER',
+      error: `Invalid capability issuer: "${capability.issuer}". Expected "brumm-governance-engine"`,
+    };
+  }
+
+  if (typeof capability.id !== 'string' || !capability.id.startsWith('cap_')) {
+    return {
+      valid: false,
+      code: 'MALFORMED_CAPABILITY',
+      error: 'Capability ID must be a string starting with "cap_"',
+    };
+  }
+
+  if (typeof capability.nonce !== 'string' || !/^[0-9a-f]{16,}$/i.test(capability.nonce)) {
+    return {
+      valid: false,
+      code: 'MALFORMED_NONCE',
+      error: 'Capability nonce must be a hex string of at least 16 characters',
+    };
+  }
+
+  if (typeof capability.policyHash !== 'string' || !/^[0-9a-f]{64}$/i.test(capability.policyHash)) {
+    return {
+      valid: false,
+      code: 'MALFORMED_POLICY_HASH',
+      error: 'Capability policyHash must be a 64-character hex SHA-256 digest',
+    };
+  }
+
+  if (
+    !capability.subject ||
+    typeof capability.subject !== 'object' ||
+    Array.isArray(capability.subject) ||
+    typeof capability.subject.agentId !== 'string' ||
+    capability.subject.agentId.trim().length === 0 ||
+    typeof capability.subject.user !== 'string' ||
+    capability.subject.user.trim().length === 0 ||
+    (capability.subject.taskUid !== undefined &&
+      capability.subject.taskUid !== null &&
+      typeof capability.subject.taskUid !== 'string')
+  ) {
+    return {
+      valid: false,
+      code: 'MALFORMED_SUBJECT',
+      error: 'Capability subject must contain valid agentId, user, and optional taskUid',
+    };
+  }
+
+  if (typeof capability.action !== 'string' || capability.action.trim().length === 0) {
+    return {
+      valid: false,
+      code: 'MALFORMED_ACTION',
+      error: 'Capability action must be a non-empty string',
+    };
+  }
+
+  if (typeof capability.resource !== 'string' || capability.resource.trim().length === 0) {
+    return {
+      valid: false,
+      code: 'MALFORMED_RESOURCE',
+      error: 'Capability resource must be a non-empty string',
+    };
+  }
+
+  if (!capability.constraints || typeof capability.constraints !== 'object' || Array.isArray(capability.constraints)) {
+    return {
+      valid: false,
+      code: 'MALFORMED_CONSTRAINTS',
+      error: 'Capability constraints must be an object',
+    };
+  }
+
+  // 2. Timestamp & Invariant Validation
+  if (
+    !Number.isSafeInteger(capability.issuedAt) ||
+    capability.issuedAt <= 0 ||
+    !Number.isSafeInteger(capability.expiresAt) ||
+    capability.expiresAt <= 0
+  ) {
+    return {
+      valid: false,
+      code: 'MALFORMED_TIMESTAMPS',
+      error: 'Capability timestamps (issuedAt, expiresAt) must be positive safe integers',
+    };
+  }
+
+  if (capability.expiresAt <= capability.issuedAt) {
+    return {
+      valid: false,
+      code: 'INVALID_TIME_INVARIANT',
+      error: `Capability expiresAt (${capability.expiresAt}) must be strictly greater than issuedAt (${capability.issuedAt})`,
+    };
+  }
+
+  const ttlMs = capability.expiresAt - capability.issuedAt;
+  if (ttlMs < 1000 || ttlMs > 300000) {
+    return {
+      valid: false,
+      code: 'INVALID_TIME_INVARIANT',
+      error: `Capability TTL (${ttlMs}ms) is outside permissible bounds (1000ms - 300000ms)`,
+    };
+  }
+
+  // 3. Cryptographic Signature Verification (Tamper & Forgery Defense)
+  if (typeof capability.signature !== 'string' || !/^[0-9a-f]{64}$/i.test(capability.signature)) {
+    return {
+      valid: false,
+      code: 'FORGERY_DETECTED',
+      error: 'Missing or malformed capability cryptographic signature',
+    };
   }
 
   const signingKey = resolveSigningKey(options.signingKey);
   const tracker = options.nonceTracker || globalNonceTracker;
 
-  // 1. Verify Cryptographic Signature (Tamper & Forgery Defense)
   const { signature, ...unsignedPayload } = capability;
-  if (!signature || typeof signature !== 'string') {
-    return { valid: false, code: 'FORGERY_DETECTED', error: 'Missing capability cryptographic signature' };
-  }
-
   const expectedSignature = signCapabilityPayload(unsignedPayload, signingKey);
-  if (signature !== expectedSignature) {
-    return { valid: false, code: 'FORGERY_DETECTED', error: 'Invalid capability signature: payload has been tampered with or forged' };
+
+  const sigBuf = Buffer.from(signature, 'hex');
+  const expBuf = Buffer.from(expectedSignature, 'hex');
+  if (sigBuf.length !== expBuf.length || !timingSafeEqual(sigBuf, expBuf)) {
+    return {
+      valid: false,
+      code: 'FORGERY_DETECTED',
+      error: 'Invalid capability signature: payload has been tampered with or forged',
+    };
   }
 
-  // 2. Verify Expiry (Ephemeral Lease Defense)
+  // 4. Verify Expiry (Ephemeral Lease Defense)
   const now = Date.now();
-  if (now > capability.expiresAt) {
-    return { valid: false, code: 'CAPABILITY_EXPIRED', error: `Capability lease expired at ${capability.expiresAt} (current: ${now})` };
+  if (now >= capability.expiresAt) {
+    return {
+      valid: false,
+      code: 'CAPABILITY_EXPIRED',
+      error: `Capability lease expired at ${capability.expiresAt} (current: ${now})`,
+    };
   }
 
-  // 3. Verify TOCTOU Stale Policy Defense (Policy Hash Binding)
+  // 5. Verify TOCTOU Stale Policy Defense (Policy Hash Binding)
   if (currentPolicy && currentPolicy.hash !== capability.policyHash) {
     return {
       valid: false,
@@ -284,13 +425,31 @@ export function verifyCapability(
     };
   }
 
-  // 4. Verify Subject / Audience Binding
-  const context = normalizeAgentContext(rawContext);
+  // 6. Verify Subject / Audience Binding
+  let context;
+  try {
+    context = normalizeAgentContext(rawContext);
+  } catch (err) {
+    return {
+      valid: false,
+      code: 'MALFORMED_CONTEXT',
+      error: `Malformed agent context: ${err.message}`,
+    };
+  }
+
   if (context.agentId !== capability.subject.agentId) {
     return {
       valid: false,
       code: 'AUDIENCE_MISMATCH',
       error: `Capability bound to agent "${capability.subject.agentId}", but invoked by "${context.agentId}"`,
+    };
+  }
+
+  if (capability.subject.user && context.user !== capability.subject.user) {
+    return {
+      valid: false,
+      code: 'USER_MISMATCH',
+      error: `Capability bound to user "${capability.subject.user}", but invoked by "${context.user}"`,
     };
   }
 
@@ -302,7 +461,7 @@ export function verifyCapability(
     };
   }
 
-  // 5. Verify Action & Resource Binding
+  // 7. Verify Action & Resource Binding
   let request;
   try {
     request = normalizeActionRequest(rawRequest);
@@ -326,7 +485,7 @@ export function verifyCapability(
     };
   }
 
-  // 6. Verify Blast Radius Limits Bound in Lease
+  // 8. Verify Blast Radius Limits Bound in Lease
   if (capability.constraints.maxBytes !== null && request.requestedBytes > capability.constraints.maxBytes) {
     return {
       valid: false,
@@ -359,7 +518,7 @@ export function verifyCapability(
     };
   }
 
-  // 7. Atomic Replay Check / Consumption
+  // 9. Atomic Replay Check / Consumption
   if (options.consume === true) {
     const consumed = tracker.atomicConsume(capability.nonce, capability.expiresAt);
     if (!consumed) {

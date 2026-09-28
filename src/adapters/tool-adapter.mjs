@@ -54,32 +54,86 @@ export function createExecutionGuard(options = {}) {
         }
 
         // 1. Parameter Substitution Defense:
-        // Ensure that target/resource parameters in caller's payload match the authorized capability resource
-        const targetParam = params.resource || params.target || params.path || params.destination;
-        if (targetParam && typeof targetParam === 'string') {
-          const canonicalParam = canonicalizeResource(targetParam).uri;
-          const authorizedResource = capability.resource;
+        // Ensure that all candidate resource parameters present in caller's payload match the authorized capability resource
+        const CANDIDATE_RESOURCE_KEYS = [
+          'resource',
+          'target',
+          'path',
+          'destination',
+          'dest',
+          'file',
+          'filePath',
+          'filepath',
+          'uri',
+          'url',
+          'source',
+          'src',
+        ];
 
-          if (
-            canonicalParam !== authorizedResource &&
-            !matchResourcePattern(canonicalParam, authorizedResource)
-          ) {
-            throw new ExecutionSecurityError(
-              `Parameter substitution attack detected: parameter target ("${canonicalParam}") does not match authorized capability resource ("${authorizedResource}")`,
-              'PARAMETER_SUBSTITUTION_DETECTED'
-            );
+        const authorizedResource = capability.resource;
+
+        const checkResourceTarget = (paramKey, targetVal) => {
+          if (typeof targetVal === 'string' && targetVal.trim().length > 0) {
+            let canonicalParam;
+            try {
+              canonicalParam = canonicalizeResource(targetVal).uri;
+            } catch (err) {
+              throw new ExecutionSecurityError(
+                `Parameter substitution attack detected: parameter "${paramKey}" is invalid: ${err.message}`,
+                'PARAMETER_SUBSTITUTION_DETECTED'
+              );
+            }
+
+            if (
+              canonicalParam !== authorizedResource &&
+              !matchResourcePattern(canonicalParam, authorizedResource)
+            ) {
+              throw new ExecutionSecurityError(
+                `Parameter substitution attack detected: parameter "${paramKey}" ("${canonicalParam}") does not match authorized capability resource ("${authorizedResource}")`,
+                'PARAMETER_SUBSTITUTION_DETECTED'
+              );
+            }
           }
+        };
+
+        for (const key of CANDIDATE_RESOURCE_KEYS) {
+          const val = params[key];
+          if (val !== undefined && val !== null) {
+            if (Array.isArray(val)) {
+              for (const item of val) {
+                checkResourceTarget(key, item);
+              }
+            } else {
+              checkResourceTarget(key, val);
+            }
+          }
+        }
+
+        // Check S3 bucket + key composite parameters if present
+        if (
+          params.bucket !== undefined &&
+          params.bucket !== null &&
+          params.key !== undefined &&
+          params.key !== null &&
+          typeof params.bucket === 'string' &&
+          typeof params.key === 'string' &&
+          params.bucket.trim().length > 0 &&
+          params.key.trim().length > 0
+        ) {
+          const s3Uri = `s3://${params.bucket.trim()}/${params.key.trim().replace(/^\//, '')}`;
+          checkResourceTarget('bucket/key', s3Uri);
         }
 
         // 2. Atomic Verification + Nonce Consumption
         const effectiveRequest = request || {
           action: toolName,
-          resource: targetParam || capability.resource,
+          resource: capability.resource,
         };
 
         const effectiveContext = context || {
           agentId: capability.subject.agentId,
           taskUid: capability.subject.taskUid,
+          user: capability.subject.user,
         };
 
         const verification = verifyCapability(

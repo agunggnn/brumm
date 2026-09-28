@@ -55,6 +55,9 @@ import {
  * @param {string|object} options.policy Path to YAML/JSON policy file or policy object
  * @param {string} [options.agent] Default agent identifier
  * @param {string} [options.environment] Default environment (e.g. 'production', 'development')
+ * @param {string} [options.user] Default user identifier (e.g. 'system', 'alice')
+ * @param {'strict'|'gateway'} [options.trustBoundary='strict'] Context trust boundary mode
+ * @param {boolean} [options.allowContextOverride=false] Alias for gateway trust boundary
  * @returns {object} Guard instance
  */
 export function createGuard(options = {}) {
@@ -63,13 +66,16 @@ export function createGuard(options = {}) {
   if (typeof options.policy === 'string') {
     policy = loadPolicyFile(options.policy);
   } else if (options.policy && typeof options.policy === 'object') {
-    policy = compilePolicy(options.policy);
+    policy = (options.policy.hash && typeof options.policy.hash === 'string')
+      ? options.policy
+      : compilePolicy(options.policy);
   } else {
     throw new TypeError('options.policy must be a valid file path string or policy object');
   }
 
   const defaultAgent = options.agent || 'default-agent';
   const defaultEnvironment = options.environment || 'development';
+  const defaultUser = options.user || 'system';
   const isGateway = options.trustBoundary === 'gateway' || options.allowContextOverride === true;
 
   return {
@@ -125,12 +131,22 @@ export function createGuard(options = {}) {
               policyHash: policy.hash,
             });
           }
+          if (contextOverride.user !== undefined && contextOverride.user !== defaultUser) {
+            return createDecision({
+              outcome: DecisionOutcome.DENY,
+              reasons: [
+                `Security context violation: Untrusted caller attempted to override bound user "${defaultUser}" with "${contextOverride.user}"`,
+              ],
+              policyHash: policy.hash,
+            });
+          }
         }
       }
 
       const mergedContext = {
         agentId: defaultAgent,
         environment: defaultEnvironment,
+        user: defaultUser,
         ...(typeof contextOverride === 'string' ? { agentId: contextOverride } : contextOverride),
       };
       return evaluatePolicy(policy, request, mergedContext);

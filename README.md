@@ -134,7 +134,17 @@ if (!execution.executed) {
 }
 ```
 
-### 4. Run Test Suite
+### 4. Dynamic Capability Verification & Trust Boundaries (Milestone P2.3)
+
+Brumm enforces strict, fail-closed cryptographic and audience verification before granting execution:
+
+- **Audience & User Subject Binding**: Capabilities are cryptographically bound to `agentId`, `taskUid`, and `user`. Calling tools with a mismatched user identity yields `USER_MISMATCH`. In `strict` trust boundary mode, callers cannot override or escalate user identity.
+- **Fail-Closed Structural Validation**: Validates capability version (`1.0`), issuer (`brumm-governance-engine`), ID format (`cap_*`), nonce entropy, policy hash, subject schema, action, resource, constraints, and timestamps before signature processing.
+- **Strict Expiration & Purge Semantics**: Leases expire strictly at `now >= expiresAt`. Replay tracking automatically purges nonces once expired.
+- **Multi-Parameter Substitution Defense**: Execution guards inspect all candidate resource parameters (`resource`, `target`, `path`, `destination`, `dest`, `file`, `filePath`, `filepath`, `uri`, `url`, `source`, `src`, and S3 `bucket`+`key`), blocking any attempt to execute against resources differing from authorized capability bounds.
+- **Process-Local Replay Architecture Notice**: `NonceTracker` protects against concurrent and sequential replays within the process. For distributed multi-replica or serverless clusters, back with a distributed CAS store (Redis `SET NX PX` or DynamoDB conditional put).
+
+### 5. Run Test Suite
 Brumm uses the zero-dependency Node 22+ native test runner:
 
 ```bash
