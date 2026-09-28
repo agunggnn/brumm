@@ -5,6 +5,7 @@
  * and parameter-to-resource binding directly before invocation of underlying tools.
  */
 
+import { deepFreeze } from '../core/canonical-json.mjs';
 import { canonicalizeResource, matchResourcePattern } from '../core/canonical.mjs';
 import {
   issueCapability,
@@ -24,7 +25,7 @@ import { normalizeActionRequest } from '../core/identity.mjs';
  * @returns {object} Execution Guard
  */
 export function createExecutionGuard(options = {}) {
-  const { guard, signingKey } = options;
+  const { guard, signingKey, contracts = {} } = options;
 
   if (!guard || typeof guard.evaluate !== 'function') {
     throw new TypeError('ExecutionGuard requires a valid Brumm guard instance');
@@ -38,9 +39,10 @@ export function createExecutionGuard(options = {}) {
      *
      * @param {string} toolName
      * @param {Function} rawExecutor The actual tool function (e.g. AWS SDK call, fs.rm, kubectl)
+     * @param {object} [toolOptions] Tool execution configuration including explicit contract
      * @returns {Function} Protected executor
      */
-    protect(toolName, rawExecutor) {
+    protect(toolName, rawExecutor, toolOptions = {}) {
       if (typeof toolName !== 'string' || toolName.trim().length === 0) {
         throw new TypeError('Tool name must be a non-empty string');
       }
@@ -49,6 +51,25 @@ export function createExecutionGuard(options = {}) {
       }
 
       const normalizedTool = toolName.trim().toLowerCase();
+
+      // Resolve and freeze tool contract if provided (authoritative source of truth)
+      const rawContract = toolOptions?.contract || contracts[normalizedTool] || null;
+      let contract = null;
+      if (rawContract) {
+        if (typeof rawContract !== 'object' || Array.isArray(rawContract)) {
+          throw new TypeError(`Contract for tool "${toolName}" must be an object`);
+        }
+        if (rawContract.extractResource !== undefined && typeof rawContract.extractResource !== 'function') {
+          throw new TypeError(`contract.extractResource for tool "${toolName}" must be a function`);
+        }
+        if (rawContract.extractBytes !== undefined && typeof rawContract.extractBytes !== 'function') {
+          throw new TypeError(`contract.extractBytes for tool "${toolName}" must be a function`);
+        }
+        if (rawContract.extractCount !== undefined && typeof rawContract.extractCount !== 'function') {
+          throw new TypeError(`contract.extractCount for tool "${toolName}" must be a function`);
+        }
+        contract = deepFreeze(rawContract);
+      }
 
       return async function protectedExecutor(params = {}, securityContext = {}) {
         const { capability, request, context } = securityContext;
@@ -78,23 +99,6 @@ export function createExecutionGuard(options = {}) {
           }
         }
 
-        // 2. Parameter Substitution Defense:
-        // Ensure that all candidate resource parameters present in caller's payload match the authorized capability resource
-        const CANDIDATE_RESOURCE_KEYS = [
-          'resource',
-          'target',
-          'path',
-          'destination',
-          'dest',
-          'file',
-          'filePath',
-          'filepath',
-          'uri',
-          'url',
-          'source',
-          'src',
-        ];
-
         const authorizedResource = capability.resource;
 
         const checkResourceTarget = (paramKey, targetVal) => {
@@ -118,127 +122,362 @@ export function createExecutionGuard(options = {}) {
                 'PARAMETER_SUBSTITUTION_DETECTED'
               );
             }
+            return canonicalParam;
           }
+          return null;
         };
 
-        for (const key of CANDIDATE_RESOURCE_KEYS) {
-          const val = params[key];
-          if (val !== undefined && val !== null) {
-            if (Array.isArray(val)) {
-              for (const item of val) {
-                checkResourceTarget(key, item);
+        let verifiedResource = null;
+
+        // 2. Resource Parameter Binding:
+        // An explicit contract is authoritative. Fallback scanner is advisory/defense-in-depth.
+        if (contract && contract.extractResource) {
+          let extracted;
+          try {
+            extracted = contract.extractResource(params);
+          } catch (err) {
+            throw new ExecutionSecurityError(
+              `Execution blocked for tool "${toolName}": contract.extractResource threw an error: ${err.message}`,
+              'CONTRACT_EVALUATION_ERROR'
+            );
+          }
+
+          if (extracted === undefined || extracted === null || (typeof extracted === 'string' && extracted.trim().length === 0)) {
+            if (authorizedResource !== '*') {
+              throw new ExecutionSecurityError(
+                `Execution blocked for tool "${toolName}": contract.extractResource failed to resolve required resource from parameters`,
+                'UNBOUND_EXECUTION_PARAMETER'
+              );
+            }
+          } else if (Array.isArray(extracted)) {
+            for (const item of extracted) {
+              const res = checkResourceTarget('contract.extractResource', item);
+              if (res && !verifiedResource) verifiedResource = res;
+            }
+          } else {
+            verifiedResource = checkResourceTarget('contract.extractResource', extracted);
+          }
+        } else {
+          // Conservative Fallback Scanner
+          const candidateTargets = [];
+          const CANDIDATE_RESOURCE_KEYS = new Set([
+            'resource',
+            'target',
+            'path',
+            'destination',
+            'dest',
+            'file',
+            'filename',
+            'filePath',
+            'filepath',
+            'uri',
+            'url',
+            'source',
+            'src',
+            'remotePath',
+            'tableName',
+            'table',
+            'arn',
+            'key',
+          ]);
+
+          // Flat S3 composite
+          const bVal = params.bucket ?? params.Bucket;
+          const kVal = params.key ?? params.Key;
+          let hasS3Composite = false;
+          if (typeof bVal === 'string' && bVal.trim().length > 0 &&
+              typeof kVal === 'string' && kVal.trim().length > 0) {
+            const s3Uri = `s3://${bVal.trim()}/${kVal.trim().replace(/^\//, '')}`;
+            candidateTargets.push({ key: 'bucket/key', val: s3Uri });
+            hasS3Composite = true;
+          }
+
+          // Flat keys
+          for (const key of Object.keys(params)) {
+            if (hasS3Composite && (key === 'key' || key === 'Key' || key === 'bucket' || key === 'Bucket')) {
+              continue;
+            }
+            if (CANDIDATE_RESOURCE_KEYS.has(key)) {
+              const val = params[key];
+              if (val !== undefined && val !== null) {
+                candidateTargets.push({ key, val });
               }
-            } else {
-              checkResourceTarget(key, val);
             }
           }
-        }
 
-        // Check S3 bucket + key composite parameters if present
-        if (
-          params.bucket !== undefined &&
-          params.bucket !== null &&
-          params.key !== undefined &&
-          params.key !== null &&
-          typeof params.bucket === 'string' &&
-          typeof params.key === 'string' &&
-          params.bucket.trim().length > 0 &&
-          params.key.trim().length > 0
-        ) {
-          const s3Uri = `s3://${params.bucket.trim()}/${params.key.trim().replace(/^\//, '')}`;
-          checkResourceTarget('bucket/key', s3Uri);
+          // Nested objects up to depth 2 (e.g. input.*, s3.*, file.*, request.*)
+          for (const [topKey, topVal] of Object.entries(params)) {
+            if (topVal && typeof topVal === 'object' && !Array.isArray(topVal) &&
+                !Buffer.isBuffer(topVal) && !(topVal instanceof Uint8Array) && !(topVal instanceof ArrayBuffer)) {
+              const nB = topVal.bucket ?? topVal.Bucket;
+              const nK = topVal.key ?? topVal.Key;
+              let hasNestedS3 = false;
+              if (typeof nB === 'string' && nB.trim().length > 0 &&
+                  typeof nK === 'string' && nK.trim().length > 0) {
+                const s3Uri = `s3://${nB.trim()}/${nK.trim().replace(/^\//, '')}`;
+                candidateTargets.push({ key: `${topKey}.bucket/key`, val: s3Uri });
+                hasNestedS3 = true;
+              }
+
+              for (const [subKey, subVal] of Object.entries(topVal)) {
+                if (hasNestedS3 && (subKey === 'key' || subKey === 'Key' || subKey === 'bucket' || subKey === 'Bucket')) {
+                  continue;
+                }
+                if (CANDIDATE_RESOURCE_KEYS.has(subKey) && subVal !== undefined && subVal !== null) {
+                  candidateTargets.push({ key: `${topKey}.${subKey}`, val: subVal });
+                }
+              }
+            }
+          }
+
+          for (const { key, val } of candidateTargets) {
+            if (Array.isArray(val)) {
+              for (const item of val) {
+                const res = checkResourceTarget(key, item);
+                if (res && !verifiedResource) verifiedResource = res;
+              }
+            } else {
+              const res = checkResourceTarget(key, val);
+              if (res && !verifiedResource) verifiedResource = res;
+            }
+          }
+
+          // If capability is bound to a specific resource (not '*'), but params has caller properties and no candidate target was identified:
+          const callerParamKeys = Object.keys(params).filter(k => !k.startsWith('_authorized'));
+          if (authorizedResource !== '*' && callerParamKeys.length > 0 && candidateTargets.length === 0) {
+            throw new ExecutionSecurityError(
+              `Execution blocked for tool "${toolName}": capability is bound to resource "${authorizedResource}", but execution parameters do not expose a recognizable resource binding and no tool contract was provided`,
+              'UNBOUND_EXECUTION_PARAMETER'
+            );
+          }
         }
 
         // 3. Execution Parameter Measurement Extraction & Validation:
-        // Protect against capability blast-radius bypass where caller invokes executor with params exceeding lease or authorized request
-        const CANDIDATE_BYTE_KEYS = [
-          'size',
-          'bytes',
-          'requestedBytes',
-          'byteLength',
-          'contentLength',
-          'byteSize',
-        ];
-
-        const CANDIDATE_COUNT_KEYS = [
-          'count',
-          'requestedCount',
-          'objectCount',
-          'itemCount',
-        ];
-
         let paramsBytes = null;
         let paramsBytesKey = null;
-
-        for (const key of CANDIDATE_BYTE_KEYS) {
-          const val = params[key];
-          if (val !== undefined && val !== null) {
-            let parsed;
-            try {
-              parsed = parseByteSize(val);
-            } catch (err) {
-              throw new ExecutionSecurityError(
-                `Execution blocked for tool "${toolName}": invalid byte size parameter "${key}": ${err.message}`,
-                'MALFORMED_MEASUREMENT'
-              );
-            }
-            if (paramsBytes !== null && paramsBytes !== parsed) {
-              throw new ExecutionSecurityError(
-                `Parameter substitution attack detected: conflicting byte size parameters in execution payload ("${paramsBytesKey}"=${paramsBytes}B vs "${key}"=${parsed}B)`,
-                'PARAMETER_SUBSTITUTION_DETECTED'
-              );
-            }
-            paramsBytes = parsed;
-            paramsBytesKey = key;
-          }
-        }
 
         let paramsCount = null;
         let paramsCountKey = null;
 
-        for (const key of CANDIDATE_COUNT_KEYS) {
-          const val = params[key];
-          if (val !== undefined && val !== null) {
-            let parsed;
-            if (typeof val === 'number') {
-              if (!Number.isSafeInteger(val) || val < 0) {
+        // A. Bytes Extraction
+        if (contract && contract.extractBytes) {
+          let extractedBytes;
+          try {
+            extractedBytes = contract.extractBytes(params);
+          } catch (err) {
+            throw new ExecutionSecurityError(
+              `Execution blocked for tool "${toolName}": contract.extractBytes threw an error: ${err.message}`,
+              'CONTRACT_EVALUATION_ERROR'
+            );
+          }
+
+          if (extractedBytes === undefined || extractedBytes === null) {
+            if (capability.constraints?.maxBytes !== null) {
+              throw new ExecutionSecurityError(
+                `Execution blocked for tool "${toolName}": contract.extractBytes failed to resolve required byte size from parameters`,
+                'UNBOUND_EXECUTION_PARAMETER'
+              );
+            }
+          } else {
+            try {
+              paramsBytes = parseByteSize(extractedBytes);
+              paramsBytesKey = 'contract.extractBytes';
+            } catch (err) {
+              throw new ExecutionSecurityError(
+                `Execution blocked for tool "${toolName}": invalid byte size returned by contract: ${err.message}`,
+                'MALFORMED_MEASUREMENT'
+              );
+            }
+          }
+        } else {
+          // Fallback Scanner for Bytes:
+          const CANDIDATE_BYTE_KEYS = [
+            'size',
+            'bytes',
+            'requestedBytes',
+            'byteLength',
+            'contentLength',
+            'byteSize',
+          ];
+
+          for (const key of CANDIDATE_BYTE_KEYS) {
+            const val = params[key];
+            if (val !== undefined && val !== null) {
+              let parsed;
+              try {
+                parsed = parseByteSize(val);
+              } catch (err) {
                 throw new ExecutionSecurityError(
-                  `Execution blocked for tool "${toolName}": invalid object count parameter "${key}": ${val}. Must be a safe non-negative integer.`,
+                  `Execution blocked for tool "${toolName}": invalid byte size parameter "${key}": ${err.message}`,
                   'MALFORMED_MEASUREMENT'
                 );
               }
-              parsed = val;
-            } else if (typeof val === 'string') {
-              const trimmed = val.trim();
+              if (paramsBytes !== null && paramsBytes !== parsed) {
+                throw new ExecutionSecurityError(
+                  `Parameter substitution attack detected: conflicting byte size parameters in execution payload ("${paramsBytesKey}"=${paramsBytes}B vs "${key}"=${parsed}B)`,
+                  'PARAMETER_SUBSTITUTION_DETECTED'
+                );
+              }
+              paramsBytes = parsed;
+              paramsBytesKey = key;
+            }
+          }
+
+          // Implicit payload measurement (body, content, data, payload)
+          const CANDIDATE_PAYLOAD_KEYS = ['body', 'content', 'data', 'payload'];
+          function getPayloadByteLength(val) {
+            if (val === null || val === undefined) return null;
+            if (Buffer.isBuffer(val) || val instanceof Uint8Array || val instanceof ArrayBuffer) {
+              return val.byteLength;
+            }
+            if (typeof val === 'string') {
+              return Buffer.byteLength(val, 'utf8');
+            }
+            return null;
+          }
+
+          for (const pKey of CANDIDATE_PAYLOAD_KEYS) {
+            const pVal = params[pKey] ?? (params.input && typeof params.input === 'object' ? params.input[pKey] : undefined);
+            const actualBytes = getPayloadByteLength(pVal);
+            if (actualBytes !== null) {
+              if (paramsBytes !== null && actualBytes > paramsBytes) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": actual payload size (${actualBytes}B) in "${pKey}" exceeds declared size (${paramsBytes}B)`,
+                  'BYTE_LIMIT_EXCEEDED'
+                );
+              }
+              if (paramsBytes === null) {
+                paramsBytes = actualBytes;
+                paramsBytesKey = pKey;
+              }
+            }
+          }
+        }
+
+        // B. Count Extraction
+        if (contract && contract.extractCount) {
+          let extractedCount;
+          try {
+            extractedCount = contract.extractCount(params);
+          } catch (err) {
+            throw new ExecutionSecurityError(
+              `Execution blocked for tool "${toolName}": contract.extractCount threw an error: ${err.message}`,
+              'CONTRACT_EVALUATION_ERROR'
+            );
+          }
+
+          if (extractedCount === undefined || extractedCount === null) {
+            if (capability.constraints?.maxObjects !== null) {
+              throw new ExecutionSecurityError(
+                `Execution blocked for tool "${toolName}": contract.extractCount failed to resolve required object count from parameters`,
+                'UNBOUND_EXECUTION_PARAMETER'
+              );
+            }
+          } else {
+            if (typeof extractedCount === 'number') {
+              if (!Number.isSafeInteger(extractedCount) || extractedCount < 0) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": contract.extractCount returned invalid count: ${extractedCount}`,
+                  'MALFORMED_MEASUREMENT'
+                );
+              }
+              paramsCount = extractedCount;
+            } else if (typeof extractedCount === 'string') {
+              const trimmed = extractedCount.trim();
               if (!/^[0-9]+$/.test(trimmed)) {
                 throw new ExecutionSecurityError(
-                  `Execution blocked for tool "${toolName}": invalid object count parameter "${key}": "${val}". Expected digits only.`,
+                  `Execution blocked for tool "${toolName}": contract.extractCount returned non-integer string: "${extractedCount}"`,
                   'MALFORMED_MEASUREMENT'
                 );
               }
               const num = Number(trimmed);
               if (!Number.isSafeInteger(num) || num < 0) {
                 throw new ExecutionSecurityError(
-                  `Execution blocked for tool "${toolName}": invalid object count parameter "${key}": "${val}". Exceeds safe integer range.`,
+                  `Execution blocked for tool "${toolName}": contract.extractCount count out of safe range`,
                   'MALFORMED_MEASUREMENT'
                 );
               }
-              parsed = num;
+              paramsCount = num;
             } else {
               throw new ExecutionSecurityError(
-                `Execution blocked for tool "${toolName}": invalid object count parameter "${key}" type: ${typeof val}.`,
+                `Execution blocked for tool "${toolName}": contract.extractCount returned invalid type: ${typeof extractedCount}`,
                 'MALFORMED_MEASUREMENT'
               );
             }
+            paramsCountKey = 'contract.extractCount';
+          }
+        } else {
+          // Fallback Scanner for Count:
+          const CANDIDATE_COUNT_KEYS = [
+            'count',
+            'requestedCount',
+            'objectCount',
+            'itemCount',
+          ];
 
-            if (paramsCount !== null && paramsCount !== parsed) {
-              throw new ExecutionSecurityError(
-                `Parameter substitution attack detected: conflicting object count parameters in execution payload ("${paramsCountKey}"=${paramsCount} vs "${key}"=${parsed})`,
-                'PARAMETER_SUBSTITUTION_DETECTED'
-              );
+          for (const key of CANDIDATE_COUNT_KEYS) {
+            const val = params[key];
+            if (val !== undefined && val !== null) {
+              let parsed;
+              if (typeof val === 'number') {
+                if (!Number.isSafeInteger(val) || val < 0) {
+                  throw new ExecutionSecurityError(
+                    `Execution blocked for tool "${toolName}": invalid object count parameter "${key}": ${val}. Must be a safe non-negative integer.`,
+                    'MALFORMED_MEASUREMENT'
+                  );
+                }
+                parsed = val;
+              } else if (typeof val === 'string') {
+                const trimmed = val.trim();
+                if (!/^[0-9]+$/.test(trimmed)) {
+                  throw new ExecutionSecurityError(
+                    `Execution blocked for tool "${toolName}": invalid object count parameter "${key}": "${val}". Expected digits only.`,
+                    'MALFORMED_MEASUREMENT'
+                  );
+                }
+                const num = Number(trimmed);
+                if (!Number.isSafeInteger(num) || num < 0) {
+                  throw new ExecutionSecurityError(
+                    `Execution blocked for tool "${toolName}": invalid object count parameter "${key}": "${val}". Exceeds safe integer range.`,
+                    'MALFORMED_MEASUREMENT'
+                  );
+                }
+                parsed = num;
+              } else {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": invalid object count parameter "${key}" type: ${typeof val}.`,
+                  'MALFORMED_MEASUREMENT'
+                );
+              }
+
+              if (paramsCount !== null && paramsCount !== parsed) {
+                throw new ExecutionSecurityError(
+                  `Parameter substitution attack detected: conflicting object count parameters in execution payload ("${paramsCountKey}"=${paramsCount} vs "${key}"=${parsed})`,
+                  'PARAMETER_SUBSTITUTION_DETECTED'
+                );
+              }
+              paramsCount = parsed;
+              paramsCountKey = key;
             }
-            paramsCount = parsed;
-            paramsCountKey = key;
+          }
+
+          // Implicit array count (items, records, objects, keys, files)
+          const CANDIDATE_ARRAY_KEYS = ['items', 'records', 'objects', 'keys', 'files'];
+          for (const arrKey of CANDIDATE_ARRAY_KEYS) {
+            const arrVal = params[arrKey] ?? (params.input && typeof params.input === 'object' ? params.input[arrKey] : undefined);
+            if (Array.isArray(arrVal)) {
+              const arrLen = arrVal.length;
+              if (paramsCount !== null && arrLen > paramsCount) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": actual array items count (${arrLen}) in "${arrKey}" exceeds declared count (${paramsCount})`,
+                  'OBJECT_LIMIT_EXCEEDED'
+                );
+              }
+              if (paramsCount === null) {
+                paramsCount = arrLen;
+                paramsCountKey = arrKey;
+              }
+            }
           }
         }
 
@@ -326,7 +565,7 @@ export function createExecutionGuard(options = {}) {
 
         const effectiveRequest = {
           action: normalizedTool,
-          resource: (request && (request.resource || request.rawResource)) || capability.resource,
+          resource: verifiedResource || (request && (request.resource || request.rawResource)) || capability.resource,
           size: effectiveSize,
           count: effectiveCount,
           hasSnapshot: effectiveHasSnapshot,
@@ -383,7 +622,7 @@ export function createExecutionGuard(options = {}) {
      * @param {Function} rawExecutor The actual tool implementation to run if permitted
      * @returns {Promise<{ executed: boolean, result?: any, decision: object, capability?: object, constrained?: boolean, error?: string }>}
      */
-    async execute(actionRequest, agentContext, rawExecutor) {
+    async execute(actionRequest, agentContext, rawExecutor, options = {}) {
       // Strict request normalization upfront (rejects malformed booleans like "false", 0, etc.)
       const normRequest = normalizeActionRequest(actionRequest);
 
@@ -431,7 +670,7 @@ export function createExecutionGuard(options = {}) {
       });
 
       // 5. Wrap and execute via protected boundary
-      const protectedTool = this.protect(normRequest.action, rawExecutor);
+      const protectedTool = this.protect(normRequest.action, rawExecutor, options);
 
       const result = await protectedTool(
         actionRequest.parameters || {},
