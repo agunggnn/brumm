@@ -330,3 +330,159 @@ describe('Security Regression 6: Provider-Aware URI Authority Traversal Defense'
     assert.equal(res.uri, 'arn:aws:s3:::my-bucket/data/prod.db');
   });
 });
+
+describe('Security Regression 7: Strict Constraint Value Validation', () => {
+  it('rejects non-numeric string for max_objects ("abc")', () => {
+    assert.throws(
+      () => {
+        compilePolicy({
+          name: 'bad-objects',
+          rules: [{ id: 'r1', effect: 'ALLOW', constraints: { max_objects: 'abc' } }],
+        });
+      },
+      PolicyValidationError
+    );
+  });
+
+  it('rejects negative object counts', () => {
+    assert.throws(
+      () => {
+        compilePolicy({
+          name: 'bad-objects',
+          rules: [{ id: 'r1', effect: 'ALLOW', constraints: { max_objects: -10 } }],
+        });
+      },
+      PolicyValidationError
+    );
+  });
+
+  it('rejects non-boolean values for require_snapshot', () => {
+    assert.throws(
+      () => {
+        compilePolicy({
+          name: 'bad-bool',
+          rules: [{ id: 'r1', effect: 'ALLOW', constraints: { require_snapshot: 'yes' } }],
+        });
+      },
+      PolicyValidationError
+    );
+  });
+});
+
+describe('Security Regression 8: Fail-Closed Malformed Request Counts', () => {
+  const policy = compilePolicy({
+    name: 'test-pol',
+    rules: [{ id: 'r1', effect: 'ALLOW', action: '*', resource: '**' }],
+  });
+
+  it('DENIES when count is negative', () => {
+    const decision = evaluatePolicy(policy, { action: 'read', resource: '/data', count: -5 });
+    assert.equal(decision.outcome, DecisionOutcome.DENY);
+    assert.equal(decision.isDenied, true);
+    assert.match(decision.reasons[0], /Invalid requested object count/);
+  });
+
+  it('DENIES when count is non-numeric string', () => {
+    const decision = evaluatePolicy(policy, { action: 'read', resource: '/data', count: 'invalid' });
+    assert.equal(decision.outcome, DecisionOutcome.DENY);
+    assert.match(decision.reasons[0], /Invalid requested object count/);
+  });
+
+  it('correctly parses digit string count ("1000")', () => {
+    const countPolicy = compilePolicy({
+      name: 'count-pol',
+      rules: [{ id: 'r1', effect: 'ALLOW', action: '*', resource: '**', constraints: { max_objects: 500 } }],
+    });
+    const decision = evaluatePolicy(countPolicy, { action: 'read', resource: '/data', count: '1000' });
+    assert.equal(decision.outcome, DecisionOutcome.DENY);
+    assert.match(decision.reasons[0], /exceeds absolute maximum limit \(500\)/);
+  });
+});
+
+describe('Security Regression 9: Fail-Closed Malformed Agent Context', () => {
+  const policy = compilePolicy({
+    name: 'test-pol',
+    rules: [{ id: 'r1', effect: 'ALLOW', action: '*', resource: '**' }],
+  });
+
+  it('DENIES instead of throwing when context is null', () => {
+    const decision = evaluatePolicy(policy, { action: 'read', resource: '/data' }, null);
+    assert.equal(decision.outcome, DecisionOutcome.DENY);
+    assert.equal(decision.isDenied, true);
+    assert.match(decision.reasons[0], /Invalid or malformed request\/context/);
+  });
+
+  it('DENIES when context is an invalid primitive number', () => {
+    const decision = evaluatePolicy(policy, { action: 'read', resource: '/data' }, 12345);
+    assert.equal(decision.outcome, DecisionOutcome.DENY);
+  });
+});
+
+describe('Security Regression 10: Percent-Encoded Path Traversal Protection', () => {
+  it('detects and blocks %2e%2e traversal attempts escaping root', () => {
+    assert.throws(
+      () => canonicalizeResource('/var/%2e%2e/%2e%2e/etc/passwd'),
+      ResourceCanonicalizationError
+    );
+  });
+
+  it('detects and blocks double-encoded %252e%252e traversal', () => {
+    assert.throws(
+      () => canonicalizeResource('/var/%252e%252e/%252e%252e/etc/passwd'),
+      ResourceCanonicalizationError
+    );
+  });
+
+  it('detects encoded slashes and backslashes (%2f, %5c)', () => {
+    assert.throws(
+      () => canonicalizeResource('/var/%2e%2e%2f%2e%2e%5cetc%5cpasswd'),
+      ResourceCanonicalizationError
+    );
+  });
+
+  it('blocks encoded traversal in S3 URIs', () => {
+    assert.throws(
+      () => canonicalizeResource('s3://prod-bucket/%2e%2e/other-bucket'),
+      ResourceCanonicalizationError
+    );
+  });
+});
+
+describe('Security Regression 11: Deep Immutability of Decision Objects', () => {
+  const policy = compilePolicy({
+    name: 'test-pol',
+    rules: [{
+      id: 'r1',
+      effect: 'CONSTRAIN',
+      action: 'delete',
+      resource: '**',
+      constraints: { require_snapshot: true },
+    }],
+  });
+
+  it('throws TypeError when attempting to mutate returned decision object or constraints', () => {
+    const decision = evaluatePolicy(policy, { action: 'delete', resource: '/data', snapshot: false });
+    assert.equal(decision.outcome, DecisionOutcome.CONSTRAIN);
+
+    assert.throws(
+      () => {
+        decision.outcome = DecisionOutcome.ALLOW;
+      },
+      TypeError
+    );
+
+    assert.throws(
+      () => {
+        decision.constraints.requireSnapshot = false;
+      },
+      TypeError
+    );
+
+    assert.throws(
+      () => {
+        decision.reasons.push('injected reason');
+      },
+      TypeError
+    );
+  });
+});

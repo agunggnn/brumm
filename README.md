@@ -99,7 +99,39 @@ if (decision.allowed) {
 }
 ```
 
-### 3. Run Test Suite
+### 3. Execution Boundary & Tool Guard (`createExecutionGuard`)
+Enforce capability verification directly at the physical tool execution boundary:
+
+```javascript
+import { createGuard, createExecutionGuard } from '@agunggnn/brumm';
+
+const guard = createGuard({ policy: './brumm-policy.yaml' });
+const executionGuard = createExecutionGuard({ guard });
+
+// Protect an underlying sensitive tool (Cloud SDK, DB, OS process)
+const protectedDelete = executionGuard.protect('delete', async (params, { capability }) => {
+  // Guaranteed: capability is cryptographically signed, unexpired, and nonce is consumed
+  return await executeRawDelete(params);
+});
+
+// Or run through the unified governance-to-execution pipeline:
+const execution = await executionGuard.execute(
+  {
+    action: 'delete',
+    resource: 'backup-prod/temp.log',
+    parameters: { path: 'backup-prod/temp.log' },
+    snapshot: true,
+  },
+  { agentId: 'cleanup-agent', environment: 'production' },
+  async (params) => await executeRawDelete(params)
+);
+
+if (!execution.executed) {
+  console.error('Execution blocked by Brumm:', execution.decision.reasons);
+}
+```
+
+### 4. Run Test Suite
 Brumm uses the zero-dependency Node 22+ native test runner:
 
 ```bash

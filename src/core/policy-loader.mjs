@@ -135,6 +135,26 @@ export function validatePolicySchema(rawPolicy) {
           );
         }
 
+        const SIZE_FIELDS = new Set([
+          'max_size',
+          'absolute_max_size',
+          'autonomous_max_size',
+          'approval_above',
+          'require_approval_above',
+        ]);
+
+        const OBJECT_FIELDS = new Set([
+          'max_objects',
+          'absolute_max_objects',
+          'approval_above_objects',
+          'require_approval_above_objects',
+        ]);
+
+        const BOOLEAN_FIELDS = new Set([
+          'require_snapshot',
+          'dry_run_only',
+        ]);
+
         for (const cKey of Object.keys(rule.constraints)) {
           if (!ALLOWED_CONSTRAINT_FIELDS.has(cKey)) {
             throw new PolicyValidationError(
@@ -142,6 +162,42 @@ export function validatePolicySchema(rawPolicy) {
               cKey,
               ruleId
             );
+          }
+
+          const val = rule.constraints[cKey];
+
+          if (SIZE_FIELDS.has(cKey)) {
+            try {
+              parseByteSize(val);
+            } catch (err) {
+              throw new PolicyValidationError(
+                `Invalid byte size for constraint "${cKey}" in rule "${ruleId}": ${err.message}`,
+                cKey,
+                ruleId
+              );
+            }
+          } else if (OBJECT_FIELDS.has(cKey)) {
+            let isValid = false;
+            if (typeof val === 'number') {
+              isValid = Number.isInteger(val) && val >= 0;
+            } else if (typeof val === 'string') {
+              isValid = /^[0-9]+$/.test(val.trim());
+            }
+            if (!isValid) {
+              throw new PolicyValidationError(
+                `Invalid value for object count constraint "${cKey}" in rule "${ruleId}": expected a non-negative integer, got ${JSON.stringify(val)}`,
+                cKey,
+                ruleId
+              );
+            }
+          } else if (BOOLEAN_FIELDS.has(cKey)) {
+            if (typeof val !== 'boolean') {
+              throw new PolicyValidationError(
+                `Constraint "${cKey}" in rule "${ruleId}" must be a boolean, got ${typeof val}`,
+                cKey,
+                ruleId
+              );
+            }
           }
         }
       }

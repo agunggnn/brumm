@@ -1,9 +1,10 @@
 /**
  * @file src/index.mjs
  * Main entry point for @agunggnn/brumm.
- * Provides the primary programmatic API: createGuard()
+ * Provides the primary programmatic API: createGuard() and createExecutionGuard()
  */
 
+import { createExecutionGuard } from './adapters/tool-adapter.mjs';
 import {
   canonicalizeJson,
   computeCanonicalSha256,
@@ -12,7 +13,15 @@ import {
 import {
   canonicalizeResource,
   matchResourcePattern,
+  safePercentDecode,
 } from './core/canonical.mjs';
+import {
+  consumeCapability,
+  globalNonceTracker,
+  issueCapability,
+  signCapabilityPayload,
+  verifyCapability,
+} from './core/capability.mjs';
 import {
   DecisionOutcome,
   PrecedenceRank,
@@ -22,6 +31,8 @@ import {
   parseByteSize,
 } from './core/decision.mjs';
 import {
+  CapabilitySecurityError,
+  ExecutionSecurityError,
   PolicyValidationError,
   ResourceCanonicalizationError,
 } from './core/errors.mjs';
@@ -92,10 +103,17 @@ export function createGuard(options = {}) {
   };
 }
 
-// Re-export core modules
+// Re-export core modules & adapters
 export {
+  createExecutionGuard,
+  issueCapability,
+  verifyCapability,
+  consumeCapability,
+  globalNonceTracker,
+  signCapabilityPayload,
   canonicalizeResource,
   matchResourcePattern,
+  safePercentDecode,
   canonicalizeJson,
   computeCanonicalSha256,
   deepFreeze,
@@ -113,4 +131,6 @@ export {
   normalizeActionRequest,
   PolicyValidationError,
   ResourceCanonicalizationError,
+  CapabilitySecurityError,
+  ExecutionSecurityError,
 };

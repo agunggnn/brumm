@@ -1,7 +1,4 @@
-/**
- * @file decision.mjs
- * Policy decision outcomes, rule effects, precedence definitions, and size parsers.
- */
+import { deepFreeze } from './canonical-json.mjs';
 
 /**
  * Enumeration of possible policy decision outcomes.
@@ -143,17 +140,19 @@ export function createDecision({
   constraints = null,
   suggestedTransform = null,
 }) {
-  return {
+  const decision = {
     outcome,
     allowed: outcome === DecisionOutcome.ALLOW,
     requiresApproval: outcome === DecisionOutcome.ESCALATE,
     isConstrained: outcome === DecisionOutcome.CONSTRAIN,
     isDenied: outcome === DecisionOutcome.DENY,
-    reasons: Object.freeze([...reasons]),
+    reasons: [...reasons],
     matchedRule,
     policyHash,
-    constraints: constraints ? Object.freeze({ ...constraints }) : null,
-    suggestedTransform: suggestedTransform ? Object.freeze({ ...suggestedTransform }) : null,
+    constraints: constraints ? { ...constraints } : null,
+    suggestedTransform: suggestedTransform ? { ...suggestedTransform } : null,
     timestamp: Date.now(),
   };
+
+  return deepFreeze(decision);
 }

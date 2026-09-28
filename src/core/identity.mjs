@@ -82,10 +82,25 @@ export function normalizeActionRequest(request) {
     requestedBytes = parseByteSize(request.size);
   }
 
-  // Normalize requested count
-  const requestedCount = typeof request.requestedCount === 'number'
-    ? Math.max(0, Math.floor(request.requestedCount))
-    : (typeof request.count === 'number' ? Math.max(0, Math.floor(request.count)) : 1);
+  // Normalize requested count strictly (fail-closed)
+  let requestedCount = 1;
+  const rawCount = request.requestedCount !== undefined ? request.requestedCount : request.count;
+
+  if (rawCount !== undefined && rawCount !== null) {
+    if (typeof rawCount === 'number') {
+      if (!Number.isInteger(rawCount) || rawCount < 0) {
+        throw new TypeError(`Invalid requested object count: ${rawCount}. Must be a non-negative integer.`);
+      }
+      requestedCount = rawCount;
+    } else if (typeof rawCount === 'string') {
+      if (!/^[0-9]+$/.test(rawCount.trim())) {
+        throw new TypeError(`Invalid requested object count string: "${rawCount}". Expected digits only.`);
+      }
+      requestedCount = parseInt(rawCount.trim(), 10);
+    } else {
+      throw new TypeError(`Invalid requested object count type: ${typeof rawCount}. Must be an integer or digit string.`);
+    }
+  }
 
   return {
     action,

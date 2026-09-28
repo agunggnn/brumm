@@ -8,7 +8,14 @@ export {
   computeCanonicalSha256,
   deepFreeze,
 } from './canonical-json.mjs';
-export { canonicalizeResource, matchResourcePattern } from './canonical.mjs';
+export { canonicalizeResource, matchResourcePattern, safePercentDecode } from './canonical.mjs';
+export {
+  consumeCapability,
+  globalNonceTracker,
+  issueCapability,
+  signCapabilityPayload,
+  verifyCapability,
+} from './capability.mjs';
 export {
   DecisionOutcome,
   PrecedenceRank,
@@ -18,6 +25,8 @@ export {
   parseByteSize,
 } from './decision.mjs';
 export {
+  CapabilitySecurityError,
+  ExecutionSecurityError,
   PolicyValidationError,
   ResourceCanonicalizationError,
 } from './errors.mjs';
@@ -25,6 +34,7 @@ export { normalizeActionRequest, normalizeAgentContext } from './identity.mjs';
 export { evaluatePolicy } from './policy-engine.mjs';
 export {
   compilePolicy,
+  computePolicyHash,
   loadPolicyFile,
   parseYamlSubset,
   validatePolicySchema,

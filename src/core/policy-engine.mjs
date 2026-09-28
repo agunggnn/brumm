@@ -45,16 +45,17 @@ export function evaluatePolicy(compiledPolicy, rawRequest, rawContext = {}) {
     throw new TypeError('compiledPolicy must be a valid compiled policy object');
   }
 
-  const context = normalizeAgentContext(rawContext);
+  let context;
   let request;
 
   try {
+    context = normalizeAgentContext(rawContext);
     request = normalizeActionRequest(rawRequest);
   } catch (err) {
-    // If request normalization fails (e.g. traversal attempt), immediately DENY
+    // If context or request normalization fails, immediately DENY (fail-closed)
     return createDecision({
       outcome: DecisionOutcome.DENY,
-      reasons: [`Invalid or malformed action request: ${err.message}`],
+      reasons: [`Invalid or malformed request/context: ${err.message}`],
       policyHash: compiledPolicy.hash,
     });
   }

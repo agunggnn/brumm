@@ -1,6 +1,6 @@
 /**
  * @file errors.mjs
- * Custom error types for Brumm policy validation and evaluation.
+ * Custom error types for Brumm policy validation, capability governance, and execution enforcement.
  */
 
 export class PolicyValidationError extends Error {
@@ -26,5 +26,29 @@ export class ResourceCanonicalizationError extends Error {
     super(message);
     this.name = 'ResourceCanonicalizationError';
     this.resource = resource;
+  }
+}
+
+export class CapabilitySecurityError extends Error {
+  /**
+   * @param {string} message
+   * @param {string} [code]
+   */
+  constructor(message, code = 'CAPABILITY_ERROR') {
+    super(message);
+    this.name = 'CapabilitySecurityError';
+    this.code = code;
+  }
+}
+
+export class ExecutionSecurityError extends Error {
+  /**
+   * @param {string} message
+   * @param {string} [code]
+   */
+  constructor(message, code = 'EXECUTION_BLOCKED') {
+    super(message);
+    this.name = 'ExecutionSecurityError';
+    this.code = code;
   }
 }
