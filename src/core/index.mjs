@@ -7,6 +7,7 @@ export {
   canonicalizeJson,
   computeCanonicalSha256,
   deepFreeze,
+  isDeepFrozen,
 } from './canonical-json.mjs';
 export { canonicalizeResource, matchResourcePattern, safePercentDecode } from './canonical.mjs';
 export {
@@ -33,7 +34,6 @@ export {
 export { normalizeActionRequest, normalizeAgentContext } from './identity.mjs';
 export { evaluatePolicy } from './policy-engine.mjs';
 export {
-  COMPILED_POLICY_BRAND,
   compilePolicy,
   computePolicyHash,
   isCompiledPolicy,

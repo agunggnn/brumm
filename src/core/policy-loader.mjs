@@ -5,13 +5,15 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { computeCanonicalSha256, deepFreeze } from './canonical-json.mjs';
+import { computeCanonicalSha256, deepFreeze, isDeepFrozen } from './canonical-json.mjs';
 export { computeCanonicalSha256 as computePolicyHash };
 
 /**
- * Symbol brand applied exclusively to authentic compiled policies.
+ * Private brand symbol and compiler registry for authentic compiled policies.
+ * Unexported so external callers cannot forge brand or register arbitrary objects.
  */
-export const COMPILED_POLICY_BRAND = Symbol.for('brumm.compiled.policy');
+const COMPILED_POLICY_BRAND = Symbol('brumm.compiled.policy');
+const COMPILED_POLICY_REGISTRY = new WeakSet();
 import {
   DecisionOutcome,
   ValidDefaultEffects,
@@ -676,13 +678,19 @@ export function compilePolicy(rawPolicy) {
   };
 
   // 3. Deep freeze to prevent any post-compilation mutation
-  return deepFreeze(compiled);
+  deepFreeze(compiled);
+
+  // 4. Register in compiler registry as authentic compiled policy
+  COMPILED_POLICY_REGISTRY.add(compiled);
+
+  return compiled;
 }
 
 /**
  * Strictly verifies whether an object is an authentic, deeply immutable, compiled policy.
- * Validates brand identity, immutability, structure, and verifies that the canonical SHA-256
- * digest matches the compiled policy structure.
+ * Verifies private compiler registry membership, brand identity, deep immutability,
+ * structural schema invariants across all compiled rules and constraints, and verifies
+ * that the canonical SHA-256 digest matches the compiled policy structure.
  *
  * @param {any} policy
  * @returns {boolean}
@@ -692,11 +700,26 @@ export function isCompiledPolicy(policy) {
     return false;
   }
 
+  // 1. Must be registered in the compiler registry and have private brand
+  if (!COMPILED_POLICY_REGISTRY.has(policy)) {
+    return false;
+  }
+
   if (policy[COMPILED_POLICY_BRAND] !== true) {
     return false;
   }
 
-  if (!Object.isFrozen(policy)) {
+  // 2. Must be deeply frozen across all reachable nested properties
+  if (!isDeepFrozen(policy)) {
+    return false;
+  }
+
+  // 3. Top-level metadata invariants
+  if (typeof policy.name !== 'string' || typeof policy.version !== 'string') {
+    return false;
+  }
+
+  if (typeof policy.defaultEffect !== 'string' || !ValidDefaultEffects.includes(policy.defaultEffect.toUpperCase())) {
     return false;
   }
 
@@ -708,12 +731,71 @@ export function isCompiledPolicy(policy) {
     return false;
   }
 
-  // Cryptographic integrity verification: recompute canonical SHA-256
+  // 4. Structural validation of each compiled rule and its constraints
+  for (const r of policy.rules) {
+    if (!r || typeof r !== 'object' || Array.isArray(r)) {
+      return false;
+    }
+    if (typeof r.id !== 'string' || r.id.length === 0) {
+      return false;
+    }
+    if (typeof r.effect !== 'string' || !ValidEffects.includes(r.effect.toUpperCase())) {
+      return false;
+    }
+    if (typeof r.agentPattern !== 'string' || typeof r.actionPattern !== 'string' ||
+        typeof r.resourcePattern !== 'string' || typeof r.environmentPattern !== 'string') {
+      return false;
+    }
+    if (!Array.isArray(r.reasons) || !r.reasons.every(reason => typeof reason === 'string')) {
+      return false;
+    }
+    if (typeof r.isCriticalProtection !== 'boolean') {
+      return false;
+    }
+    if (!r.constraints || typeof r.constraints !== 'object' || Array.isArray(r.constraints)) {
+      return false;
+    }
+
+    const {
+      absoluteMaxSize,
+      requireApprovalAbove,
+      absoluteMaxObjects,
+      requireApprovalAboveObjects,
+      requireSnapshot,
+      dryRunOnly,
+    } = r.constraints;
+
+    if (absoluteMaxSize !== null && (!Number.isSafeInteger(absoluteMaxSize) || absoluteMaxSize < 0)) {
+      return false;
+    }
+    if (requireApprovalAbove !== null && (!Number.isSafeInteger(requireApprovalAbove) || requireApprovalAbove < 0)) {
+      return false;
+    }
+    if (absoluteMaxSize !== null && requireApprovalAbove !== null && requireApprovalAbove > absoluteMaxSize) {
+      return false;
+    }
+
+    if (absoluteMaxObjects !== null && (!Number.isSafeInteger(absoluteMaxObjects) || absoluteMaxObjects < 0)) {
+      return false;
+    }
+    if (requireApprovalAboveObjects !== null && (!Number.isSafeInteger(requireApprovalAboveObjects) || requireApprovalAboveObjects < 0)) {
+      return false;
+    }
+    if (absoluteMaxObjects !== null && requireApprovalAboveObjects !== null && requireApprovalAboveObjects > absoluteMaxObjects) {
+      return false;
+    }
+
+    if (typeof requireSnapshot !== 'boolean' || typeof dryRunOnly !== 'boolean') {
+      return false;
+    }
+  }
+
+  // 5. Cryptographic integrity verification: recompute canonical SHA-256
   try {
     const normalizedStructure = {
-      name: typeof policy.name === 'string' ? policy.name : 'unnamed-policy',
-      version: typeof policy.version === 'string' ? policy.version : '1.0',
-      defaultEffect: (policy.defaultEffect || 'DENY').toUpperCase(),
+      name: policy.name,
+      version: policy.version,
+      defaultEffect: policy.defaultEffect.toUpperCase(),
       rules: policy.rules.map(r => ({
         id: r.id,
         effect: r.effect,

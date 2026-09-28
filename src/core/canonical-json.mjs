@@ -61,25 +61,77 @@ export function computeCanonicalSha256(value) {
 }
 
 /**
- * Recursively freezes an object and all nested objects/arrays to guarantee immutability.
+ * Recursively freezes an object and all nested objects/arrays/symbols to guarantee immutability.
+ * Traverses both string and symbol own properties and handles circular references safely.
  *
  * @template T
  * @param {T} obj
+ * @param {Set<any>} [seen]
  * @returns {Readonly<T>}
  */
-export function deepFreeze(obj) {
+export function deepFreeze(obj, seen = new Set()) {
   if (obj === null || typeof obj !== 'object') {
     return obj;
   }
 
+  if (seen.has(obj)) {
+    return obj;
+  }
+  seen.add(obj);
+
   Object.freeze(obj);
 
-  for (const key of Object.getOwnPropertyNames(obj)) {
-    const val = obj[key];
+  for (const key of Reflect.ownKeys(obj)) {
+    let val;
+    try {
+      val = obj[key];
+    } catch {
+      continue;
+    }
     if (val !== null && typeof val === 'object' && !Object.isFrozen(val)) {
-      deepFreeze(val);
+      deepFreeze(val, seen);
     }
   }
 
   return obj;
+}
+
+/**
+ * Recursively verifies that an object and all nested objects/arrays/symbols are frozen.
+ * Traverses both string and symbol own properties and handles circular references safely.
+ *
+ * @param {any} obj
+ * @param {Set<any>} [seen]
+ * @returns {boolean}
+ */
+export function isDeepFrozen(obj, seen = new Set()) {
+  if (obj === null || typeof obj !== 'object') {
+    return true;
+  }
+
+  if (seen.has(obj)) {
+    return true;
+  }
+
+  if (!Object.isFrozen(obj)) {
+    return false;
+  }
+
+  seen.add(obj);
+
+  for (const key of Reflect.ownKeys(obj)) {
+    let val;
+    try {
+      val = obj[key];
+    } catch {
+      return false;
+    }
+    if (val !== null && typeof val === 'object') {
+      if (!isDeepFrozen(val, seen)) {
+        return false;
+      }
+    }
+  }
+
+  return true;
 }

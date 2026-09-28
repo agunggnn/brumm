@@ -9,6 +9,7 @@ import {
   canonicalizeJson,
   computeCanonicalSha256,
   deepFreeze,
+  isDeepFrozen,
 } from './core/canonical-json.mjs';
 import {
   canonicalizeResource,
@@ -42,7 +43,6 @@ import {
 } from './core/identity.mjs';
 import { evaluatePolicy } from './core/policy-engine.mjs';
 import {
-  COMPILED_POLICY_BRAND,
   compilePolicy,
   isCompiledPolicy,
   loadPolicyFile,
@@ -170,9 +170,9 @@ export {
   canonicalizeJson,
   computeCanonicalSha256,
   deepFreeze,
+  isDeepFrozen,
   compilePolicy,
   isCompiledPolicy,
-  COMPILED_POLICY_BRAND,
   loadPolicyFile,
   parseYamlSubset,
   validatePolicySchema,

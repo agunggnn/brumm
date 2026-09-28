@@ -10,13 +10,14 @@
 import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import {
-  COMPILED_POLICY_BRAND,
   CapabilitySecurityError,
   DecisionOutcome,
   PolicyValidationError,
   compilePolicy,
+  computeCanonicalSha256,
   createGuard,
   isCompiledPolicy,
+  isDeepFrozen,
   issueCapability,
   parseByteSize,
   verifyCapability,
@@ -122,7 +123,71 @@ describe('Milestone P2.3.3: Compiled-Policy Trust Boundary in createGuard()', ()
   });
 });
 
-describe('Milestone P2.3.3: isCompiledPolicy() Branding & Cryptographic Integrity', () => {
+describe('Milestone P2.3.3: isDeepFrozen() Recursive Immutability Verification', () => {
+  it('returns true for primitives, null, and undefined', () => {
+    assert.equal(isDeepFrozen(null), true);
+    assert.equal(isDeepFrozen(undefined), true);
+    assert.equal(isDeepFrozen(42), true);
+    assert.equal(isDeepFrozen('string'), true);
+    assert.equal(isDeepFrozen(true), true);
+    assert.equal(isDeepFrozen(Symbol('sym')), true);
+  });
+
+  it('returns false for unfrozen root objects and arrays', () => {
+    assert.equal(isDeepFrozen({}), false);
+    assert.equal(isDeepFrozen([]), false);
+    assert.equal(isDeepFrozen({ a: 1 }), false);
+  });
+
+  it('returns false when root is frozen but nested object is mutable', () => {
+    const shallowFrozen = Object.freeze({
+      nested: { mutable: true },
+    });
+    assert.equal(Object.isFrozen(shallowFrozen), true);
+    assert.equal(isDeepFrozen(shallowFrozen), false);
+  });
+
+  it('returns false when root is frozen but nested array is mutable', () => {
+    const shallowFrozen = Object.freeze({
+      items: ['a', 'b'],
+    });
+    assert.equal(Object.isFrozen(shallowFrozen), true);
+    assert.equal(isDeepFrozen(shallowFrozen), false);
+  });
+
+  it('returns false when root is frozen but symbol property references mutable object', () => {
+    const sym = Symbol('secret-ref');
+    const shallowFrozen = Object.freeze({
+      [sym]: { mutable: true },
+    });
+    assert.equal(Object.isFrozen(shallowFrozen), true);
+    assert.equal(isDeepFrozen(shallowFrozen), false);
+  });
+
+  it('returns true for deeply frozen objects including nested objects, arrays, and symbols', () => {
+    const sym = Symbol('sym');
+    const deeplyFrozen = Object.freeze({
+      name: 'test',
+      config: Object.freeze({
+        timeout: 1000,
+        tags: Object.freeze(['a', 'b']),
+      }),
+      [sym]: Object.freeze({ id: 123 }),
+    });
+    assert.equal(isDeepFrozen(deeplyFrozen), true);
+  });
+
+  it('handles circular references safely without infinite recursion', () => {
+    const circular = { name: 'cycle' };
+    circular.self = circular;
+    assert.equal(isDeepFrozen(circular), false);
+
+    Object.freeze(circular);
+    assert.equal(isDeepFrozen(circular), true);
+  });
+});
+
+describe('Milestone P2.3.3: isCompiledPolicy() Unforgeable Compiler Registry & Integrity', () => {
   it('returns false for primitives, null, undefined, or arrays', () => {
     assert.equal(isCompiledPolicy(null), false);
     assert.equal(isCompiledPolicy(undefined), false);
@@ -131,38 +196,119 @@ describe('Milestone P2.3.3: isCompiledPolicy() Branding & Cryptographic Integrit
     assert.equal(isCompiledPolicy([]), false);
   });
 
-  it('returns false for unbranded objects with .hash', () => {
-    assert.equal(
-      isCompiledPolicy({
-        hash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-        rules: [],
-      }),
-      false
-    );
-  });
-
-  it('returns false for branded but unfrozen objects', () => {
-    const obj = {
-      [COMPILED_POLICY_BRAND]: true,
-      name: 'unfrozen',
+  it('returns false for uncompiled objects even with valid canonical SHA-256 and frozen root', () => {
+    const normalized = {
+      name: 'forged-policy',
       version: '1.0',
       defaultEffect: 'DENY',
-      rules: [],
-      hash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      rules: [
+        {
+          id: 'r1',
+          effect: 'ALLOW',
+          agent: '*',
+          action: 'read',
+          resource: '**',
+          environment: '*',
+          reasons: ['allow-read'],
+          constraints: {
+            absoluteMaxSize: 1000,
+            requireApprovalAbove: null,
+            absoluteMaxObjects: null,
+            requireApprovalAboveObjects: null,
+            requireSnapshot: false,
+            dryRunOnly: false,
+          },
+          critical: false,
+        },
+      ],
     };
-    assert.equal(isCompiledPolicy(obj), false);
-  });
+    const validHash = computeCanonicalSha256(normalized);
 
-  it('returns false when hash does not match canonical SHA-256 of policy structure', () => {
+    // Attacker constructs object with valid hash and tries global Symbol.for
     const forged = Object.freeze({
-      [COMPILED_POLICY_BRAND]: true,
-      name: 'forged',
+      [Symbol.for('brumm.compiled.policy')]: true,
+      name: 'forged-policy',
       version: '1.0',
       defaultEffect: 'DENY',
-      rules: [],
-      hash: '0000000000000000000000000000000000000000000000000000000000000000',
+      rules: Object.freeze([
+        Object.freeze({
+          id: 'r1',
+          effect: 'ALLOW',
+          agentPattern: '*',
+          actionPattern: 'read',
+          resourcePattern: '**',
+          environmentPattern: '*',
+          reasons: Object.freeze(['allow-read']),
+          constraints: Object.freeze({
+            absoluteMaxSize: 1000,
+            requireApprovalAbove: null,
+            absoluteMaxObjects: null,
+            requireApprovalAboveObjects: null,
+            requireSnapshot: false,
+            dryRunOnly: false,
+          }),
+          isCriticalProtection: false,
+        }),
+      ]),
+      hash: validHash,
     });
+
+    // Rejected because it was not issued by compilePolicy() (not in compiler registry WeakSet)
     assert.equal(isCompiledPolicy(forged), false);
+  });
+
+  it('returns false for shallow-frozen object where nested rules are mutable', () => {
+    const fakeCompiled = Object.freeze({
+      name: 'shallow-policy',
+      version: '1.0',
+      defaultEffect: 'DENY',
+      rules: [
+        {
+          id: 'mutable-rule',
+          effect: 'ALLOW',
+          agentPattern: '*',
+          actionPattern: '*',
+          resourcePattern: '*',
+          environmentPattern: '*',
+          reasons: ['mutable'],
+          constraints: {
+            absoluteMaxSize: null,
+            requireApprovalAbove: null,
+            absoluteMaxObjects: null,
+            requireApprovalAboveObjects: null,
+            requireSnapshot: false,
+            dryRunOnly: false,
+          },
+          isCriticalProtection: false,
+        },
+      ],
+      hash: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    });
+
+    assert.equal(isCompiledPolicy(fakeCompiled), false);
+  });
+
+  it('returns true for authentic compiled policy produced by compilePolicy()', () => {
+    const authentic = compilePolicy({
+      name: 'valid-policy',
+      version: '1.0',
+      defaultEffect: 'DENY',
+      rules: [
+        {
+          id: 'r1',
+          effect: 'ALLOW',
+          agent: 'agent-1',
+          action: 'read',
+          resource: 'data/**',
+        },
+      ],
+    });
+
+    assert.equal(isCompiledPolicy(authentic), true);
+    assert.equal(isDeepFrozen(authentic), true);
+    assert.equal(isDeepFrozen(authentic.rules), true);
+    assert.equal(isDeepFrozen(authentic.rules[0]), true);
+    assert.equal(isDeepFrozen(authentic.rules[0].constraints), true);
   });
 });
 
