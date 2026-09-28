@@ -14,7 +14,10 @@ rules:
     reasons:
       - "Root-level wipe of production data storage is strictly prohibited"
 
-  # 2. Cleanup agent rule: Allowed up to 50GB with snapshot, escalates above 50GB
+  # 2. Cleanup agent rule:
+  #    - Up to 50GB: Autonomous execution (with snapshot)
+  #    - 50GB - 1TB: Escalate to human supervisor
+  #    - > 1TB or > 1,000 objects: Hard DENY
   - id: cleanup-agent-policy
     effect: ALLOW
     agent: "cleanup-agent"
@@ -22,9 +25,10 @@ rules:
     resource: "backup-prod/**"
     environment: "production"
     constraints:
-      max_size: "50GB"
+      approval_above: "50GB"
+      absolute_max_size: "1TB"
+      max_objects: 1000
       require_snapshot: true
-      require_approval_above: "50GB"
 
   # 3. Read operations permitted across non-sensitive zones
   - id: allow-general-read

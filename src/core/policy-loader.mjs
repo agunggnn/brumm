@@ -1,16 +1,156 @@
 /**
  * @file policy-loader.mjs
- * Policy parser, validator, and SHA-256 canonical hash generator.
- * Zero-dependency: natively supports JSON and standard YAML policies.
+ * Policy schema validation, compiler, loader, and canonical SHA-256 hasher.
+ * Enforces deep immutability and rejects unknown fields or invalid effects at compile time.
  */
 
-import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { parseByteSize } from './decision.mjs';
+import { computeCanonicalSha256, deepFreeze } from './canonical-json.mjs';
+export { computeCanonicalSha256 as computePolicyHash };
+import {
+  ValidDefaultEffects,
+  ValidEffects,
+  parseByteSize,
+} from './decision.mjs';
+import { PolicyValidationError } from './errors.mjs';
+
+const ALLOWED_TOP_LEVEL_FIELDS = new Set([
+  'name',
+  'version',
+  'defaultEffect',
+  'rules',
+  'metadata',
+  'description',
+]);
+
+const ALLOWED_RULE_FIELDS = new Set([
+  'id',
+  'description',
+  'effect',
+  'agent',
+  'action',
+  'resource',
+  'environment',
+  'reasons',
+  'reason',
+  'constraints',
+  'isCriticalProtection',
+  'critical',
+]);
+
+const ALLOWED_CONSTRAINT_FIELDS = new Set([
+  'max_size',
+  'absolute_max_size',
+  'autonomous_max_size',
+  'approval_above',
+  'require_approval_above',
+  'max_objects',
+  'absolute_max_objects',
+  'approval_above_objects',
+  'require_approval_above_objects',
+  'require_snapshot',
+  'dry_run_only',
+]);
+
+/**
+ * Validates the raw policy schema strictly before compilation.
+ * Rejects unknown fields, invalid types, and malformed effects.
+ *
+ * @param {object} rawPolicy
+ * @throws {PolicyValidationError}
+ */
+export function validatePolicySchema(rawPolicy) {
+  if (!rawPolicy || typeof rawPolicy !== 'object' || Array.isArray(rawPolicy)) {
+    throw new PolicyValidationError('Policy definition must be a non-null object');
+  }
+
+  // Check top-level unknown fields
+  for (const key of Object.keys(rawPolicy)) {
+    if (!ALLOWED_TOP_LEVEL_FIELDS.has(key)) {
+      throw new PolicyValidationError(`Unknown top-level field in policy: "${key}"`, key);
+    }
+  }
+
+  // Validate defaultEffect if present
+  if (rawPolicy.defaultEffect !== undefined) {
+    if (typeof rawPolicy.defaultEffect !== 'string') {
+      throw new PolicyValidationError('Field "defaultEffect" must be a string', 'defaultEffect');
+    }
+    const def = rawPolicy.defaultEffect.toUpperCase();
+    if (!ValidDefaultEffects.includes(def)) {
+      throw new PolicyValidationError(
+        `Invalid defaultEffect: "${rawPolicy.defaultEffect}". Must be one of: ${ValidDefaultEffects.join(', ')}`,
+        'defaultEffect'
+      );
+    }
+  }
+
+  // Validate rules
+  if (rawPolicy.rules !== undefined) {
+    if (!Array.isArray(rawPolicy.rules)) {
+      throw new PolicyValidationError('Field "rules" must be an array', 'rules');
+    }
+
+    for (let i = 0; i < rawPolicy.rules.length; i++) {
+      const rule = rawPolicy.rules[i];
+      const ruleId = rule && rule.id ? rule.id : `rule[${i}]`;
+
+      if (!rule || typeof rule !== 'object' || Array.isArray(rule)) {
+        throw new PolicyValidationError(`Rule at index ${i} must be an object`, 'rules', ruleId);
+      }
+
+      // Check rule-level unknown fields
+      for (const key of Object.keys(rule)) {
+        if (!ALLOWED_RULE_FIELDS.has(key)) {
+          throw new PolicyValidationError(
+            `Unknown field "${key}" in rule "${ruleId}". Typo protection active.`,
+            key,
+            ruleId
+          );
+        }
+      }
+
+      // Validate effect
+      if (rule.effect !== undefined) {
+        if (typeof rule.effect !== 'string') {
+          throw new PolicyValidationError(`Field "effect" in rule "${ruleId}" must be a string`, 'effect', ruleId);
+        }
+        const eff = rule.effect.toUpperCase();
+        if (!ValidEffects.includes(eff)) {
+          throw new PolicyValidationError(
+            `Invalid effect "${rule.effect}" in rule "${ruleId}". Must be one of: ${ValidEffects.join(', ')}`,
+            'effect',
+            ruleId
+          );
+        }
+      }
+
+      // Validate constraints if present
+      if (rule.constraints !== undefined) {
+        if (typeof rule.constraints !== 'object' || Array.isArray(rule.constraints) || rule.constraints === null) {
+          throw new PolicyValidationError(
+            `Field "constraints" in rule "${ruleId}" must be an object`,
+            'constraints',
+            ruleId
+          );
+        }
+
+        for (const cKey of Object.keys(rule.constraints)) {
+          if (!ALLOWED_CONSTRAINT_FIELDS.has(cKey)) {
+            throw new PolicyValidationError(
+              `Unknown constraint "${cKey}" in rule "${ruleId}".`,
+              cKey,
+              ruleId
+            );
+          }
+        }
+      }
+    }
+  }
+}
 
 /**
  * Lightweight, zero-dependency YAML parser for policy configuration.
- * Handles mappings, sequences, quoted/unquoted strings, numbers, and booleans.
  *
  * @param {string} text Raw YAML content
  * @returns {object} Parsed JavaScript object
@@ -19,7 +159,6 @@ export function parseYamlSubset(text) {
   const lines = text
     .split(/\r?\n/)
     .map(line => {
-      // Strip comments that are not within quotes
       const commentIdx = line.search(/(?<!['"])\s*#.*$/);
       return commentIdx !== -1 ? line.slice(0, commentIdx) : line;
     })
@@ -41,7 +180,6 @@ export function parseYamlSubset(text) {
 
       const trimmed = line.trim();
 
-      // Check for array item
       if (trimmed.startsWith('- ')) {
         if (result === null) {
           result = [];
@@ -54,10 +192,8 @@ export function parseYamlSubset(text) {
         lineIdx++;
 
         if (itemContent.length === 0) {
-          // Nested block under array item
           result.push(parseBlock(indent + 2));
         } else if (itemContent.includes(':')) {
-          // Object inline start, e.g. "- id: foo"
           const firstColon = itemContent.indexOf(':');
           const k = itemContent.slice(0, firstColon).trim();
           const v = itemContent.slice(firstColon + 1).trim();
@@ -69,7 +205,6 @@ export function parseYamlSubset(text) {
             obj[k] = parseBlock(indent + 4);
           }
 
-          // Read subsequent keys belonging to this array item
           while (lineIdx < lines.length) {
             const nextLine = lines[lineIdx];
             const nextIndent = nextLine.search(/\S/);
@@ -103,7 +238,6 @@ export function parseYamlSubset(text) {
         continue;
       }
 
-      // Check for object key-value
       const colonIdx = trimmed.indexOf(':');
       if (colonIdx !== -1) {
         if (result === null) {
@@ -136,17 +270,14 @@ export function parseYamlSubset(text) {
     if (val === 'false' || val === 'FALSE') return false;
     if (val === 'null' || val === '~') return null;
 
-    // Quoted strings
     if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
       return val.slice(1, -1);
     }
 
-    // Number
     if (/^-?[0-9]+(?:\.[0-9]+)?$/.test(val)) {
       return Number(val);
     }
 
-    // Bracketed array, e.g. [a, b, c]
     if (val.startsWith('[') && val.endsWith(']')) {
       return val.slice(1, -1).split(',').map(s => parseScalar(s.trim())).filter(s => s !== '');
     }
@@ -158,26 +289,15 @@ export function parseYamlSubset(text) {
 }
 
 /**
- * Computes a deterministic SHA-256 canonical hash of a policy object.
- *
- * @param {object} policy
- * @returns {string} SHA-256 hex string
- */
-export function computePolicyHash(policy) {
-  const canonicalString = JSON.stringify(policy, Object.keys(policy).sort());
-  return createHash('sha256').update(canonicalString).digest('hex');
-}
-
-/**
- * Validates and compiles a policy object into an executable policy representation.
+ * Validates and compiles a policy object into a deeply immutable, verified representation.
  *
  * @param {object} rawPolicy
- * @returns {object} Compiled policy object
+ * @returns {object} Compiled immutable policy
+ * @throws {PolicyValidationError} If schema or values are invalid
  */
 export function compilePolicy(rawPolicy) {
-  if (!rawPolicy || typeof rawPolicy !== 'object') {
-    throw new TypeError('Policy definition must be a non-null object');
-  }
+  // 1. Strict schema validation
+  validatePolicySchema(rawPolicy);
 
   const name = typeof rawPolicy.name === 'string' ? rawPolicy.name : 'unnamed-policy';
   const version = typeof rawPolicy.version === 'string' ? rawPolicy.version : '1.0';
@@ -197,20 +317,53 @@ export function compilePolicy(rawPolicy) {
     const resourcePattern = rule.resource || '*';
     const environmentPattern = rule.environment ? rule.environment.toLowerCase() : '*';
 
-    // Parse reasons
     const reasons = Array.isArray(rule.reasons)
       ? rule.reasons.map(String)
       : (rule.reason ? [String(rule.reason)] : []);
 
-    // Parse constraints
     const rawConstraints = rule.constraints || {};
+
+    // Parse size limits
+    const rawMaxSize = rawConstraints.absolute_max_size || rawConstraints.max_size;
+    const rawApprovalAbove = rawConstraints.require_approval_above || rawConstraints.approval_above || rawConstraints.autonomous_max_size;
+
+    const absoluteMaxSize = rawMaxSize ? parseByteSize(rawMaxSize) : null;
+    const requireApprovalAbove = rawApprovalAbove ? parseByteSize(rawApprovalAbove) : null;
+
+    if (absoluteMaxSize !== null && requireApprovalAbove !== null && requireApprovalAbove > absoluteMaxSize) {
+      throw new PolicyValidationError(
+        `In rule "${id}": require_approval_above (${requireApprovalAbove}B) cannot be greater than absolute_max_size (${absoluteMaxSize}B)`,
+        'constraints',
+        id
+      );
+    }
+
+    // Parse object count limits
+    const rawMaxObjects = rawConstraints.absolute_max_objects || rawConstraints.max_objects;
+    const rawApprovalAboveObjects = rawConstraints.require_approval_above_objects || rawConstraints.approval_above_objects;
+
+    const absoluteMaxObjects = typeof rawMaxObjects === 'number'
+      ? Math.max(0, Math.floor(rawMaxObjects))
+      : (typeof rawMaxObjects === 'string' ? parseInt(rawMaxObjects, 10) : null);
+
+    const requireApprovalAboveObjects = typeof rawApprovalAboveObjects === 'number'
+      ? Math.max(0, Math.floor(rawApprovalAboveObjects))
+      : (typeof rawApprovalAboveObjects === 'string' ? parseInt(rawApprovalAboveObjects, 10) : null);
+
+    if (absoluteMaxObjects !== null && requireApprovalAboveObjects !== null && requireApprovalAboveObjects > absoluteMaxObjects) {
+      throw new PolicyValidationError(
+        `In rule "${id}": approval_above_objects cannot be greater than max_objects`,
+        'constraints',
+        id
+      );
+    }
+
     const constraints = {
-      maxBytes: rawConstraints.max_size ? parseByteSize(rawConstraints.max_size) : null,
-      maxObjects: typeof rawConstraints.max_objects === 'number' ? rawConstraints.max_objects : null,
+      absoluteMaxSize,
+      requireApprovalAbove,
+      absoluteMaxObjects,
+      requireApprovalAboveObjects,
       requireSnapshot: Boolean(rawConstraints.require_snapshot),
-      requireApprovalAbove: rawConstraints.require_approval_above
-        ? parseByteSize(rawConstraints.require_approval_above)
-        : null,
       dryRunOnly: Boolean(rawConstraints.dry_run_only),
     };
 
@@ -227,22 +380,43 @@ export function compilePolicy(rawPolicy) {
     });
   }
 
+  // 2. Canonical JSON hashing of the normalized policy structure
+  const normalizedStructure = {
+    name,
+    version,
+    defaultEffect,
+    rules: compiledRules.map(r => ({
+      id: r.id,
+      effect: r.effect,
+      agent: r.agentPattern,
+      action: r.actionPattern,
+      resource: r.resourcePattern,
+      environment: r.environmentPattern,
+      reasons: r.reasons,
+      constraints: r.constraints,
+      critical: r.isCriticalProtection,
+    })),
+  };
+
+  const hash = computeCanonicalSha256(normalizedStructure);
+
   const compiled = {
     name,
     version,
     defaultEffect,
     rules: compiledRules,
-    hash: computePolicyHash(rawPolicy),
+    hash,
   };
 
-  return Object.freeze(compiled);
+  // 3. Deep freeze to prevent any post-compilation mutation
+  return deepFreeze(compiled);
 }
 
 /**
- * Loads and compiles a policy from a file path (JSON or YAML).
+ * Loads, validates, and compiles a policy from a file path (JSON or YAML).
  *
- * @param {string} filePath Absolute or relative path to policy file
- * @returns {object} Compiled policy
+ * @param {string} filePath
+ * @returns {object} Deeply immutable compiled policy
  */
 export function loadPolicyFile(filePath) {
   const content = readFileSync(filePath, 'utf8');
@@ -251,11 +425,9 @@ export function loadPolicyFile(filePath) {
   if (filePath.endsWith('.json')) {
     rawPolicy = JSON.parse(content);
   } else {
-    // Assume YAML (.yaml, .yml)
     try {
       rawPolicy = parseYamlSubset(content);
     } catch {
-      // Fallback to JSON in case it was JSON in disguise
       rawPolicy = JSON.parse(content);
     }
   }

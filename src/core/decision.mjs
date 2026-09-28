@@ -1,6 +1,6 @@
 /**
  * @file decision.mjs
- * Policy decision outcomes, rule effects, and precedence definitions.
+ * Policy decision outcomes, rule effects, precedence definitions, and size parsers.
  */
 
 /**
@@ -14,6 +14,24 @@ export const DecisionOutcome = {
   CONSTRAIN: 'CONSTRAIN',
   ESCALATE: 'ESCALATE',
 };
+
+/**
+ * Valid rule effects supported by the policy engine.
+ */
+export const ValidEffects = Object.freeze([
+  DecisionOutcome.ALLOW,
+  DecisionOutcome.DENY,
+  DecisionOutcome.CONSTRAIN,
+  DecisionOutcome.ESCALATE,
+]);
+
+/**
+ * Valid default effects for policy level.
+ */
+export const ValidDefaultEffects = Object.freeze([
+  DecisionOutcome.ALLOW,
+  DecisionOutcome.DENY,
+]);
 
 /**
  * Precedence ranks for resolving conflicting rules.
@@ -37,47 +55,72 @@ export const PrecedenceRank = {
 };
 
 /**
- * Parses a byte size string (e.g. "50GB", "500MB", "10KB", "1024") into numeric bytes.
+ * SI (Decimal) byte multipliers (10^N)
+ */
+const DECIMAL_MULTIPLIERS = {
+  B: 1,
+  KB: 1000,
+  MB: 1000 ** 2,
+  GB: 1000 ** 3,
+  TB: 1000 ** 4,
+};
+
+/**
+ * IEC (Binary) byte multipliers (2^N)
+ */
+const BINARY_MULTIPLIERS = {
+  KIB: 1024,
+  MIB: 1024 ** 2,
+  GIB: 1024 ** 3,
+  TIB: 1024 ** 4,
+};
+
+/**
+ * Parses a byte size string into numeric bytes with strict validation.
+ * Distinguishes decimal (GB = 1e9) from binary (GiB = 2^30) units.
+ * Throws TypeError on invalid syntax or unrecognized units.
  *
- * @param {string|number} sizeStr
- * @returns {number}
+ * @param {string|number} sizeStr e.g. "50GB", "50GiB", "500MB", "1024"
+ * @returns {number} Integer number of bytes
+ * @throws {TypeError} If format or unit is invalid
  */
 export function parseByteSize(sizeStr) {
   if (typeof sizeStr === 'number') {
-    return Math.max(0, Math.floor(sizeStr));
+    if (!Number.isFinite(sizeStr) || sizeStr < 0) {
+      throw new TypeError(`Invalid byte size number: ${sizeStr}. Must be a finite non-negative number.`);
+    }
+    return Math.floor(sizeStr);
   }
-  if (typeof sizeStr !== 'string') {
-    return 0;
+
+  if (typeof sizeStr !== 'string' || sizeStr.trim().length === 0) {
+    throw new TypeError('Byte size must be a non-empty string or positive number');
   }
 
   const trimmed = sizeStr.trim().toUpperCase();
   const match = trimmed.match(/^([0-9]+(?:\.[0-9]+)?)\s*([A-Z]*)$/);
+
   if (!match) {
-    return 0;
+    throw new TypeError(`Invalid byte size format: "${sizeStr}". Expected format like "50GB", "50GiB", "1024"`);
   }
 
   const val = parseFloat(match[1]);
   const unit = match[2];
 
-  switch (unit) {
-    case 'TB':
-    case 'TIB':
-      return Math.floor(val * 1024 * 1024 * 1024 * 1024);
-    case 'GB':
-    case 'GIB':
-      return Math.floor(val * 1024 * 1024 * 1024);
-    case 'MB':
-    case 'MIB':
-      return Math.floor(val * 1024 * 1024);
-    case 'KB':
-    case 'KIB':
-      return Math.floor(val * 1024);
-    case 'B':
-    case '':
-      return Math.floor(val);
-    default:
-      return Math.floor(val);
+  if (!unit || unit === 'B') {
+    return Math.floor(val);
   }
+
+  if (unit in BINARY_MULTIPLIERS) {
+    return Math.floor(val * BINARY_MULTIPLIERS[unit]);
+  }
+
+  if (unit in DECIMAL_MULTIPLIERS) {
+    return Math.floor(val * DECIMAL_MULTIPLIERS[unit]);
+  }
+
+  throw new TypeError(
+    `Invalid byte size unit "${unit}" in "${sizeStr}". Supported units: B, KB, MB, GB, TB (decimal) or KiB, MiB, GiB, TiB (binary).`
+  );
 }
 
 /**

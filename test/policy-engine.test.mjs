@@ -32,9 +32,9 @@ const SAMPLE_POLICY = compilePolicy({
       resource: 'backup-prod/**',
       environment: 'production',
       constraints: {
-        max_size: '50GB',
+        approval_above: '50GB',
+        absolute_max_size: '1TB',
         require_snapshot: true,
-        require_approval_above: '50GB',
       },
     },
     {
@@ -84,6 +84,24 @@ describe('Brumm Policy Engine', () => {
     assert.equal(decision.outcome, DecisionOutcome.ESCALATE);
     assert.equal(decision.requiresApproval, true);
     assert.match(decision.reasons[0], /exceeds autonomous approval threshold/);
+  });
+
+  it('DENIES when requested size exceeds absolute_max_size (hard ceiling)', () => {
+    const request = {
+      action: 'delete',
+      resource: 'backup-prod/cluster-archive',
+      size: '2TB',
+      hasSnapshot: true,
+    };
+    const context = {
+      agentId: 'cleanup-agent',
+      environment: 'production',
+    };
+
+    const decision = evaluatePolicy(SAMPLE_POLICY, request, context);
+    assert.equal(decision.outcome, DecisionOutcome.DENY);
+    assert.equal(decision.isDenied, true);
+    assert.match(decision.reasons[0], /exceeds absolute maximum limit/);
   });
 
   it('CONSTRAINS with suggested snapshot transform when snapshot is missing', () => {

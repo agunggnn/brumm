@@ -3,18 +3,29 @@
  * Core exports for the Brumm Agentic Governance Engine.
  */
 
+export {
+  canonicalizeJson,
+  computeCanonicalSha256,
+  deepFreeze,
+} from './canonical-json.mjs';
 export { canonicalizeResource, matchResourcePattern } from './canonical.mjs';
 export {
   DecisionOutcome,
   PrecedenceRank,
-  parseByteSize,
+  ValidDefaultEffects,
+  ValidEffects,
   createDecision,
+  parseByteSize,
 } from './decision.mjs';
-export { normalizeAgentContext, normalizeActionRequest } from './identity.mjs';
+export {
+  PolicyValidationError,
+  ResourceCanonicalizationError,
+} from './errors.mjs';
+export { normalizeActionRequest, normalizeAgentContext } from './identity.mjs';
+export { evaluatePolicy } from './policy-engine.mjs';
 export {
   compilePolicy,
-  computePolicyHash,
   loadPolicyFile,
   parseYamlSubset,
+  validatePolicySchema,
 } from './policy-loader.mjs';
-export { evaluatePolicy } from './policy-engine.mjs';

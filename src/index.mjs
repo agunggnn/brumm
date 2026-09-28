@@ -5,15 +5,26 @@
  */
 
 import {
+  canonicalizeJson,
+  computeCanonicalSha256,
+  deepFreeze,
+} from './core/canonical-json.mjs';
+import {
   canonicalizeResource,
   matchResourcePattern,
 } from './core/canonical.mjs';
 import {
   DecisionOutcome,
   PrecedenceRank,
+  ValidDefaultEffects,
+  ValidEffects,
   createDecision,
   parseByteSize,
 } from './core/decision.mjs';
+import {
+  PolicyValidationError,
+  ResourceCanonicalizationError,
+} from './core/errors.mjs';
 import {
   normalizeActionRequest,
   normalizeAgentContext,
@@ -21,8 +32,8 @@ import {
 import { evaluatePolicy } from './core/policy-engine.mjs';
 import {
   compilePolicy,
-  computePolicyHash,
   loadPolicyFile,
+  validatePolicySchema,
 } from './core/policy-loader.mjs';
 
 /**
@@ -50,7 +61,7 @@ export function createGuard(options = {}) {
 
   return {
     /**
-     * Active compiled policy.
+     * Active compiled, deeply immutable policy.
      */
     get policy() {
       return policy;
@@ -85,14 +96,21 @@ export function createGuard(options = {}) {
 export {
   canonicalizeResource,
   matchResourcePattern,
+  canonicalizeJson,
+  computeCanonicalSha256,
+  deepFreeze,
   compilePolicy,
-  computePolicyHash,
   loadPolicyFile,
+  validatePolicySchema,
   evaluatePolicy,
   createDecision,
   DecisionOutcome,
   PrecedenceRank,
+  ValidEffects,
+  ValidDefaultEffects,
   parseByteSize,
   normalizeAgentContext,
   normalizeActionRequest,
+  PolicyValidationError,
+  ResourceCanonicalizationError,
 };

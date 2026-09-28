@@ -65,7 +65,7 @@ rules:
           id: 'rule-del',
           effect: 'ALLOW',
           constraints: {
-            max_size: '50GB',
+            max_size: '50GiB',
             require_snapshot: true,
           },
         },
@@ -74,7 +74,7 @@ rules:
 
     const compiled = compilePolicy(raw);
     assert.equal(compiled.rules.length, 1);
-    assert.equal(compiled.rules[0].constraints.maxBytes, 50 * 1024 * 1024 * 1024);
+    assert.equal(compiled.rules[0].constraints.absoluteMaxSize, 50 * 1024 * 1024 * 1024);
     assert.equal(compiled.rules[0].constraints.requireSnapshot, true);
   });
 });

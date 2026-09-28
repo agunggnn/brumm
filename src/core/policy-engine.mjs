@@ -8,6 +8,7 @@ import { matchResourcePattern } from './canonical.mjs';
 import {
   DecisionOutcome,
   PrecedenceRank,
+  ValidEffects,
   createDecision,
 } from './decision.mjs';
 import { normalizeActionRequest, normalizeAgentContext } from './identity.mjs';
@@ -88,24 +89,68 @@ export function evaluatePolicy(compiledPolicy, rawRequest, rawContext = {}) {
     let outcome = rule.effect;
     let suggestedTransform = null;
 
-    // Check critical resource protection
-    if (rule.isCriticalProtection) {
+    // Fail-closed defense in depth against unrecognized effect
+    if (!ValidEffects.includes(rule.effect)) {
+      effectiveRank = PrecedenceRank.EXPLICIT_DENY;
+      outcome = DecisionOutcome.DENY;
+      reasons.push(`Internal security violation: rule "${rule.id}" has invalid effect "${rule.effect}"`);
+    }
+    // Check critical asset protection
+    else if (rule.isCriticalProtection) {
       effectiveRank = PrecedenceRank.CRITICAL_RESOURCE;
       outcome = DecisionOutcome.DENY;
       reasons.push(`Target resource "${request.canonicalResource}" is classified as a protected critical asset`);
-    } else if (rule.effect === DecisionOutcome.DENY) {
+    }
+    // Explicit deny
+    else if (rule.effect === DecisionOutcome.DENY) {
       effectiveRank = PrecedenceRank.EXPLICIT_DENY;
       outcome = DecisionOutcome.DENY;
       if (reasons.length === 0) {
         reasons.push(`Action "${request.action}" on "${request.canonicalResource}" explicitly denied by rule "${rule.id}"`);
       }
-    } else if (rule.effect === DecisionOutcome.ESCALATE) {
+    }
+    // Explicit escalation
+    else if (rule.effect === DecisionOutcome.ESCALATE) {
       effectiveRank = PrecedenceRank.ESCALATE;
       outcome = DecisionOutcome.ESCALATE;
-    } else {
-      // Evaluate constraints on ALLOW or CONSTRAIN rules
-      // A. Check approval escalation threshold (e.g. size exceeds autonomous limit)
+    }
+    // ALLOW or CONSTRAIN: evaluate blast radius constraints
+    else {
+      // 1. Check object count hard cap (absolute_max_objects)
       if (
+        constraints.absoluteMaxObjects !== null &&
+        request.requestedCount > constraints.absoluteMaxObjects
+      ) {
+        effectiveRank = PrecedenceRank.EXPLICIT_DENY;
+        outcome = DecisionOutcome.DENY;
+        reasons.push(
+          `Requested object count (${request.requestedCount}) exceeds absolute maximum limit (${constraints.absoluteMaxObjects})`
+        );
+      }
+      // 2. Check byte size hard cap (absolute_max_size)
+      else if (
+        constraints.absoluteMaxSize !== null &&
+        request.requestedBytes > constraints.absoluteMaxSize
+      ) {
+        effectiveRank = PrecedenceRank.EXPLICIT_DENY;
+        outcome = DecisionOutcome.DENY;
+        reasons.push(
+          `Requested size (${request.requestedBytes} bytes) exceeds absolute maximum limit (${constraints.absoluteMaxSize} bytes)`
+        );
+      }
+      // 3. Check object count approval threshold (approval_above_objects)
+      else if (
+        constraints.requireApprovalAboveObjects !== null &&
+        request.requestedCount > constraints.requireApprovalAboveObjects
+      ) {
+        effectiveRank = PrecedenceRank.ESCALATE;
+        outcome = DecisionOutcome.ESCALATE;
+        reasons.push(
+          `Requested object count (${request.requestedCount}) exceeds autonomous approval threshold (${constraints.requireApprovalAboveObjects})`
+        );
+      }
+      // 4. Check byte size approval threshold (require_approval_above)
+      else if (
         constraints.requireApprovalAbove !== null &&
         request.requestedBytes > constraints.requireApprovalAbove
       ) {
@@ -115,18 +160,7 @@ export function evaluatePolicy(compiledPolicy, rawRequest, rawContext = {}) {
           `Requested size (${request.requestedBytes} bytes) exceeds autonomous approval threshold (${constraints.requireApprovalAbove} bytes)`
         );
       }
-      // B. Check hard max size cap
-      else if (
-        constraints.maxBytes !== null &&
-        request.requestedBytes > constraints.maxBytes
-      ) {
-        effectiveRank = PrecedenceRank.EXPLICIT_DENY;
-        outcome = DecisionOutcome.DENY;
-        reasons.push(
-          `Requested size (${request.requestedBytes} bytes) exceeds maximum allowable limit (${constraints.maxBytes} bytes)`
-        );
-      }
-      // C. Check snapshot requirement
+      // 5. Check snapshot requirement
       else if (constraints.requireSnapshot && !request.hasSnapshot) {
         effectiveRank = PrecedenceRank.CONSTRAIN;
         outcome = DecisionOutcome.CONSTRAIN;
@@ -137,7 +171,7 @@ export function evaluatePolicy(compiledPolicy, rawRequest, rawContext = {}) {
           pipeline: ['SNAPSHOT', 'DRY_RUN', 'EXECUTE'],
         };
       }
-      // D. Check dry-run requirement
+      // 6. Check dry-run requirement
       else if (constraints.dryRunOnly && !request.isDryRun) {
         effectiveRank = PrecedenceRank.CONSTRAIN;
         outcome = DecisionOutcome.CONSTRAIN;
