@@ -76,10 +76,12 @@ Reasons:
 ```javascript
 import { createGuard } from '@agunggnn/brumm';
 
+// Strict context boundary by default: callers cannot spoof environment or agentId
 const guard = createGuard({
   policy: './brumm-policy.yaml',
   agent: 'cleanup-agent',
   environment: 'production',
+  // trustBoundary: 'strict', // 'strict' (default) blocks untrusted identity escalation; 'gateway' allows dynamic broker overrides
 });
 
 // Evaluate before invoking any tool call
@@ -87,7 +89,8 @@ const decision = guard.evaluate({
   action: 'delete',
   resource: 'backup-prod/old-logs',
   size: '10GB',
-  hasSnapshot: true,
+  count: 1, // Strict non-negative integer; fail-closed if rule enforces object limits
+  hasSnapshot: true, // Strict boolean (string "false" or numbers 0/1 are rejected)
 });
 
 if (decision.allowed) {

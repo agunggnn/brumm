@@ -64,6 +64,8 @@ rules:
         {
           id: 'rule-del',
           effect: 'ALLOW',
+          agent: '*',
+          resource: '**',
           constraints: {
             max_size: '50GiB',
             require_snapshot: true,

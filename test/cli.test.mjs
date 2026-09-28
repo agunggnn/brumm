@@ -67,6 +67,8 @@ describe('Brumm CLI Simulator', () => {
             'backup-prod/cluster-archive',
             '--size',
             '700GB',
+            '--count',
+            '1',
             '--env',
             'production',
           ],

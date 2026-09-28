@@ -129,6 +129,7 @@ describe('Milestone P2: Cryptographic Signature & Tampering Defense', () => {
     action: 'delete',
     resource: 'backup-prod/old-logs',
     size: '10GB',
+    count: 1,
     hasSnapshot: true,
   };
   const context = { agentId: 'cleanup-agent' };
@@ -200,6 +201,8 @@ describe('Milestone P2: Single-Use Nonce Replay Defense', () => {
     const request = {
       action: 'delete',
       resource: 'backup-prod/data-chunk',
+      size: '10GB',
+      count: 1,
       hasSnapshot: true,
     };
     const context = { agentId: 'cleanup-agent' };
@@ -229,6 +232,8 @@ describe('Milestone P2: TOCTOU Stale Policy Revocation', () => {
     const request = {
       action: 'delete',
       resource: 'backup-prod/data-chunk',
+      size: '10GB',
+      count: 1,
       hasSnapshot: true,
     };
     const context = { agentId: 'cleanup-agent' };
@@ -254,6 +259,8 @@ describe('Milestone P2: Subject & Resource Binding', () => {
   const request = {
     action: 'delete',
     resource: 'backup-prod/data-chunk',
+    size: '10GB',
+    count: 1,
     hasSnapshot: true,
   };
   const context = { agentId: 'cleanup-agent', taskUid: 'task-1' };
@@ -276,7 +283,7 @@ describe('Milestone P2: Subject & Resource Binding', () => {
     const verification = verifyCapability(
       capability,
       TEST_POLICY_V1,
-      { action: 'delete', resource: 'backup-prod/different-file', hasSnapshot: true },
+      { action: 'delete', resource: 'backup-prod/different-file', size: '10GB', count: 1, hasSnapshot: true },
       context
     );
     assert.equal(verification.valid, false);
@@ -322,6 +329,8 @@ describe('Milestone P2: Execution Boundary & Tool Adapter Enforcement', () => {
         action: 'delete',
         resource: 'backup-prod/temp.log',
         parameters: { target: 'backup-prod/temp.log' },
+        size: '10GB',
+        count: 1,
         snapshot: true,
       },
       { agentId: 'cleanup-agent' },
@@ -359,6 +368,8 @@ describe('Milestone P2: Execution Boundary & Tool Adapter Enforcement', () => {
     const request = {
       action: 'delete',
       resource: 'backup-prod/item',
+      size: '10GB',
+      count: 1,
       hasSnapshot: true,
     };
     const context = { agentId: 'cleanup-agent' };

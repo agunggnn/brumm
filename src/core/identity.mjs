@@ -74,33 +74,57 @@ export function normalizeActionRequest(request) {
   const action = request.action.trim().toLowerCase();
   const canonical = canonicalizeResource(request.resource);
 
-  // Normalize requested bytes
-  let requestedBytes = 0;
-  if (request.requestedBytes !== undefined && request.requestedBytes !== null) {
-    requestedBytes = parseByteSize(request.requestedBytes);
-  } else if (request.size !== undefined && request.size !== null) {
-    requestedBytes = parseByteSize(request.size);
+  // Normalize requested bytes: null if omitted, strict parsing if present
+  let requestedBytes = null;
+  const rawSize = request.requestedBytes !== undefined ? request.requestedBytes : request.size;
+  if (rawSize !== undefined && rawSize !== null) {
+    requestedBytes = parseByteSize(rawSize);
   }
 
-  // Normalize requested count strictly (fail-closed)
-  let requestedCount = 1;
+  // Normalize requested count strictly: null if omitted, safe integer if present
+  let requestedCount = null;
   const rawCount = request.requestedCount !== undefined ? request.requestedCount : request.count;
 
   if (rawCount !== undefined && rawCount !== null) {
     if (typeof rawCount === 'number') {
-      if (!Number.isInteger(rawCount) || rawCount < 0) {
-        throw new TypeError(`Invalid requested object count: ${rawCount}. Must be a non-negative integer.`);
+      if (!Number.isSafeInteger(rawCount) || rawCount < 0) {
+        throw new TypeError(`Invalid requested object count: ${rawCount}. Must be a safe non-negative integer.`);
       }
       requestedCount = rawCount;
     } else if (typeof rawCount === 'string') {
-      if (!/^[0-9]+$/.test(rawCount.trim())) {
+      const trimmed = rawCount.trim();
+      if (!/^[0-9]+$/.test(trimmed)) {
         throw new TypeError(`Invalid requested object count string: "${rawCount}". Expected digits only.`);
       }
-      requestedCount = parseInt(rawCount.trim(), 10);
+      const parsed = Number(trimmed);
+      if (!Number.isSafeInteger(parsed) || parsed < 0) {
+        throw new TypeError(`Invalid requested object count string: "${rawCount}". Exceeds safe integer range.`);
+      }
+      requestedCount = parsed;
     } else {
-      throw new TypeError(`Invalid requested object count type: ${typeof rawCount}. Must be an integer or digit string.`);
+      throw new TypeError(`Invalid requested object count type: ${typeof rawCount}. Must be a safe non-negative integer or digit string.`);
     }
   }
+
+  // Strict boolean validation (reject "false", "true", 0, 1, etc.)
+  function parseStrictBoolean(primary, secondary, primaryName, secondaryName) {
+    if (primary !== undefined && primary !== null && typeof primary !== 'boolean') {
+      throw new TypeError(`Field "${primaryName}" must be a boolean (true or false), received ${typeof primary}`);
+    }
+    if (secondary !== undefined && secondary !== null && typeof secondary !== 'boolean') {
+      throw new TypeError(`Field "${secondaryName}" must be a boolean (true or false), received ${typeof secondary}`);
+    }
+    if (primary !== undefined && primary !== null) {
+      return primary;
+    }
+    if (secondary !== undefined && secondary !== null) {
+      return secondary;
+    }
+    return false;
+  }
+
+  const hasSnapshot = parseStrictBoolean(request.hasSnapshot, request.snapshot, 'hasSnapshot', 'snapshot');
+  const isDryRun = parseStrictBoolean(request.isDryRun, request.dryRun, 'isDryRun', 'dryRun');
 
   return {
     action,
@@ -110,8 +134,8 @@ export function normalizeActionRequest(request) {
     resourceScheme: canonical.scheme,
     requestedBytes,
     requestedCount,
-    hasSnapshot: Boolean(request.hasSnapshot || request.snapshot),
-    isDryRun: Boolean(request.isDryRun || request.dryRun),
+    hasSnapshot,
+    isDryRun,
     justification: typeof request.justification === 'string' ? request.justification.trim() : '',
     parameters: request.parameters && typeof request.parameters === 'object' ? { ...request.parameters } : {},
   };

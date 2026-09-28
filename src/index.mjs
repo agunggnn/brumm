@@ -44,6 +44,7 @@ import { evaluatePolicy } from './core/policy-engine.mjs';
 import {
   compilePolicy,
   loadPolicyFile,
+  parseYamlSubset,
   validatePolicySchema,
 } from './core/policy-loader.mjs';
 
@@ -69,6 +70,7 @@ export function createGuard(options = {}) {
 
   const defaultAgent = options.agent || 'default-agent';
   const defaultEnvironment = options.environment || 'development';
+  const isGateway = options.trustBoundary === 'gateway' || options.allowContextOverride === true;
 
   return {
     /**
@@ -93,6 +95,39 @@ export function createGuard(options = {}) {
      * @returns {object} Policy Decision
      */
     evaluate(request, contextOverride = {}) {
+      if (!isGateway) {
+        if (typeof contextOverride === 'string') {
+          if (contextOverride !== defaultAgent) {
+            return createDecision({
+              outcome: DecisionOutcome.DENY,
+              reasons: [
+                `Security context violation: Untrusted caller attempted to override bound agent "${defaultAgent}" with "${contextOverride}"`,
+              ],
+              policyHash: policy.hash,
+            });
+          }
+        } else if (contextOverride && typeof contextOverride === 'object') {
+          if (contextOverride.environment !== undefined && contextOverride.environment !== defaultEnvironment) {
+            return createDecision({
+              outcome: DecisionOutcome.DENY,
+              reasons: [
+                `Security context violation: Untrusted caller attempted to override bound environment "${defaultEnvironment}" with "${contextOverride.environment}"`,
+              ],
+              policyHash: policy.hash,
+            });
+          }
+          if (contextOverride.agentId !== undefined && contextOverride.agentId !== defaultAgent) {
+            return createDecision({
+              outcome: DecisionOutcome.DENY,
+              reasons: [
+                `Security context violation: Untrusted caller attempted to override bound agent "${defaultAgent}" with "${contextOverride.agentId}"`,
+              ],
+              policyHash: policy.hash,
+            });
+          }
+        }
+      }
+
       const mergedContext = {
         agentId: defaultAgent,
         environment: defaultEnvironment,
@@ -119,6 +154,7 @@ export {
   deepFreeze,
   compilePolicy,
   loadPolicyFile,
+  parseYamlSubset,
   validatePolicySchema,
   evaluatePolicy,
   createDecision,

@@ -26,6 +26,7 @@ describe('createGuard API', () => {
       action: 'delete',
       resource: 'backup-prod/test',
       size: '10GB',
+      count: 1,
       hasSnapshot: true,
     });
 
@@ -33,7 +34,7 @@ describe('createGuard API', () => {
     assert.equal(decision.allowed, true);
   });
 
-  it('evaluates with context override', () => {
+  it('blocks untrusted environment escalation in strict mode by default', () => {
     const policyPath = resolve(process.cwd(), 'brumm-policy.yaml');
     const guard = createGuard({
       policy: policyPath,
@@ -41,8 +42,30 @@ describe('createGuard API', () => {
       environment: 'production',
     });
 
-    // Override environment to staging
+    // Untrusted override attempt to staging must be DENIED as a context violation
     const decision = guard.evaluate(
+      {
+        action: 'arbitrary-action',
+        resource: 'any-resource',
+      },
+      { environment: 'staging' }
+    );
+
+    assert.equal(decision.outcome, DecisionOutcome.DENY);
+    assert.match(decision.reasons[0], /Security context violation/);
+  });
+
+  it('permits dynamic context override when trustBoundary is configured as gateway', () => {
+    const policyPath = resolve(process.cwd(), 'brumm-policy.yaml');
+    const gatewayGuard = createGuard({
+      policy: policyPath,
+      agent: 'cleanup-agent',
+      environment: 'production',
+      trustBoundary: 'gateway',
+    });
+
+    // Gateway mode permits overriding environment dynamically
+    const decision = gatewayGuard.evaluate(
       {
         action: 'arbitrary-action',
         resource: 'any-resource',

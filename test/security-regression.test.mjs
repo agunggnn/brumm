@@ -27,6 +27,7 @@ describe('Security Regression 1: Canonical Policy Hash Integrity', () => {
         {
           id: 'rule-1',
           effect: 'ALLOW',
+          agent: '*',
           action: 'delete',
           resource: 'backup/**',
           constraints: { max_size: '50GB', require_snapshot: true },
@@ -41,6 +42,7 @@ describe('Security Regression 1: Canonical Policy Hash Integrity', () => {
         {
           constraints: { require_snapshot: true, max_size: '50GB' },
           resource: 'backup/**',
+          agent: '*',
           action: 'delete',
           effect: 'ALLOW',
           id: 'rule-1',
@@ -58,11 +60,11 @@ describe('Security Regression 1: Canonical Policy Hash Integrity', () => {
   it('produces different hash when rule effect changes (ALLOW -> DENY)', () => {
     const base = {
       name: 'guard',
-      rules: [{ id: 'r1', action: 'delete', resource: 'backup/**', effect: 'ALLOW' }],
+      rules: [{ id: 'r1', agent: '*', action: 'delete', resource: 'backup/**', effect: 'ALLOW' }],
     };
     const modified = {
       name: 'guard',
-      rules: [{ id: 'r1', action: 'delete', resource: 'backup/**', effect: 'DENY' }],
+      rules: [{ id: 'r1', agent: '*', action: 'delete', resource: 'backup/**', effect: 'DENY' }],
     };
 
     const hashA = compilePolicy(base).hash;
@@ -73,11 +75,11 @@ describe('Security Regression 1: Canonical Policy Hash Integrity', () => {
   it('produces different hash when rule resource scope expands', () => {
     const base = {
       name: 'guard',
-      rules: [{ id: 'r1', action: 'delete', resource: 'backup/**', effect: 'ALLOW' }],
+      rules: [{ id: 'r1', agent: '*', action: 'delete', resource: 'backup/**', effect: 'ALLOW' }],
     };
     const modified = {
       name: 'guard',
-      rules: [{ id: 'r1', action: 'delete', resource: '**', effect: 'ALLOW' }],
+      rules: [{ id: 'r1', agent: '*', action: 'delete', resource: '**', effect: 'ALLOW' }],
     };
 
     assert.notEqual(compilePolicy(base).hash, compilePolicy(modified).hash);
@@ -86,11 +88,11 @@ describe('Security Regression 1: Canonical Policy Hash Integrity', () => {
   it('produces different hash when nested constraint changes', () => {
     const base = {
       name: 'guard',
-      rules: [{ id: 'r1', action: 'delete', resource: 'backup/**', effect: 'ALLOW', constraints: { max_size: '50GB' } }],
+      rules: [{ id: 'r1', agent: '*', action: 'delete', resource: 'backup/**', effect: 'ALLOW', constraints: { max_size: '50GB' } }],
     };
     const modified = {
       name: 'guard',
-      rules: [{ id: 'r1', action: 'delete', resource: 'backup/**', effect: 'ALLOW', constraints: { max_size: '500GB' } }],
+      rules: [{ id: 'r1', agent: '*', action: 'delete', resource: 'backup/**', effect: 'ALLOW', constraints: { max_size: '500GB' } }],
     };
 
     assert.notEqual(compilePolicy(base).hash, compilePolicy(modified).hash);
@@ -372,7 +374,7 @@ describe('Security Regression 7: Strict Constraint Value Validation', () => {
 describe('Security Regression 8: Fail-Closed Malformed Request Counts', () => {
   const policy = compilePolicy({
     name: 'test-pol',
-    rules: [{ id: 'r1', effect: 'ALLOW', action: '*', resource: '**' }],
+    rules: [{ id: 'r1', effect: 'ALLOW', agent: '*', action: '*', resource: '**' }],
   });
 
   it('DENIES when count is negative', () => {
@@ -391,7 +393,7 @@ describe('Security Regression 8: Fail-Closed Malformed Request Counts', () => {
   it('correctly parses digit string count ("1000")', () => {
     const countPolicy = compilePolicy({
       name: 'count-pol',
-      rules: [{ id: 'r1', effect: 'ALLOW', action: '*', resource: '**', constraints: { max_objects: 500 } }],
+      rules: [{ id: 'r1', effect: 'ALLOW', agent: '*', action: '*', resource: '**', constraints: { max_objects: 500 } }],
     });
     const decision = evaluatePolicy(countPolicy, { action: 'read', resource: '/data', count: '1000' });
     assert.equal(decision.outcome, DecisionOutcome.DENY);
@@ -402,7 +404,7 @@ describe('Security Regression 8: Fail-Closed Malformed Request Counts', () => {
 describe('Security Regression 9: Fail-Closed Malformed Agent Context', () => {
   const policy = compilePolicy({
     name: 'test-pol',
-    rules: [{ id: 'r1', effect: 'ALLOW', action: '*', resource: '**' }],
+    rules: [{ id: 'r1', effect: 'ALLOW', agent: '*', action: '*', resource: '**' }],
   });
 
   it('DENIES instead of throwing when context is null', () => {
@@ -454,6 +456,7 @@ describe('Security Regression 11: Deep Immutability of Decision Objects', () => 
     rules: [{
       id: 'r1',
       effect: 'CONSTRAIN',
+      agent: '*',
       action: 'delete',
       resource: '**',
       constraints: { require_snapshot: true },

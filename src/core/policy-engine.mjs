@@ -117,8 +117,23 @@ export function evaluatePolicy(compiledPolicy, rawRequest, rawContext = {}) {
     }
     // ALLOW or CONSTRAIN: evaluate blast radius constraints
     else {
+      const hasObjectLimits = constraints.absoluteMaxObjects !== null || constraints.requireApprovalAboveObjects !== null;
+      const hasSizeLimits = constraints.absoluteMaxSize !== null || constraints.requireApprovalAbove !== null;
+
+      // Fail-closed if rule specifies object limits but request omits object count
+      if (hasObjectLimits && request.requestedCount === null) {
+        effectiveRank = PrecedenceRank.EXPLICIT_DENY;
+        outcome = DecisionOutcome.DENY;
+        reasons.push(`Rule "${rule.id}" enforces object count limits, but no object count was provided in request`);
+      }
+      // Fail-closed if rule specifies size limits but request omits data size
+      else if (hasSizeLimits && request.requestedBytes === null) {
+        effectiveRank = PrecedenceRank.EXPLICIT_DENY;
+        outcome = DecisionOutcome.DENY;
+        reasons.push(`Rule "${rule.id}" enforces data size limits, but no data size was provided in request`);
+      }
       // 1. Check object count hard cap (absolute_max_objects)
-      if (
+      else if (
         constraints.absoluteMaxObjects !== null &&
         request.requestedCount > constraints.absoluteMaxObjects
       ) {

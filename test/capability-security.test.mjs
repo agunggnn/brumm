@@ -52,7 +52,7 @@ const POLICY_V2 = compilePolicy({
 });
 
 describe('Capability Security: Atomic Replay Defense & Concurrency', () => {
-  const request = { action: 'delete', resource: 'backup-prod/test' };
+  const request = { action: 'delete', resource: 'backup-prod/test', size: '10MB', count: 1 };
   const context = { agentId: 'cleanup-agent', taskUid: 'task-1' };
   const signingKey = 'test-signing-key-minimum-32-chars-long';
 
@@ -110,7 +110,7 @@ describe('Capability Security: Signing Key Management & Production Mode', () => 
 });
 
 describe('Capability Security: TOCTOU Stale Policy Revocation', () => {
-  const request = { action: 'delete', resource: 'backup-prod/test' };
+  const request = { action: 'delete', resource: 'backup-prod/test', size: '10MB', count: 1 };
   const context = { agentId: 'cleanup-agent' };
   const signingKey = 'test-signing-key-minimum-32-chars-long';
 
@@ -135,7 +135,7 @@ describe('Capability Security: TOCTOU Stale Policy Revocation', () => {
 });
 
 describe('Capability Security: Cross-Boundary Replay Rejections', () => {
-  const request = { action: 'delete', resource: 'backup-prod/data-1' };
+  const request = { action: 'delete', resource: 'backup-prod/data-1', size: '10MB', count: 1 };
   const context = { agentId: 'cleanup-agent', taskUid: 'task-1' };
   const signingKey = 'test-signing-key-minimum-32-chars-long';
 
@@ -177,7 +177,7 @@ describe('Capability Security: Cross-Boundary Replay Rejections', () => {
     const verification = verifyCapability(
       capability,
       POLICY_V1,
-      { action: 'delete', resource: 'backup-prod/data-DIFFERENT' },
+      { action: 'delete', resource: 'backup-prod/data-DIFFERENT', size: '10MB', count: 1 },
       context,
       { signingKey }
     );
@@ -188,7 +188,7 @@ describe('Capability Security: Cross-Boundary Replay Rejections', () => {
 });
 
 describe('Capability Security: Expiration Boundary', () => {
-  const request = { action: 'delete', resource: 'backup-prod/test' };
+  const request = { action: 'delete', resource: 'backup-prod/test', size: '10MB', count: 1 };
   const context = { agentId: 'cleanup-agent' };
   const signingKey = 'test-signing-key-minimum-32-chars-long';
 

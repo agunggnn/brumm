@@ -76,6 +76,9 @@ function handlePolicyTest(args) {
     action: { type: 'string' },
     resource: { type: 'string', short: 'r' },
     size: { type: 'string', short: 's' },
+    count: { type: 'string', short: 'c' },
+    snapshot: { type: 'boolean', default: false },
+    'dry-run': { type: 'boolean', default: false },
     env: { type: 'string', short: 'e', default: 'development' },
     json: { type: 'boolean', default: false },
   };
@@ -117,6 +120,9 @@ function handlePolicyTest(args) {
     action: values.action,
     resource: values.resource,
     size: values.size,
+    count: values.count,
+    hasSnapshot: values.snapshot,
+    isDryRun: values['dry-run'],
   };
 
   const context = {
