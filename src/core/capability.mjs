@@ -198,9 +198,16 @@ export function issueCapability({
     }
   }
 
-  const ttlSeconds = typeof options.ttlSeconds === 'number'
-    ? Math.max(1, Math.min(300, Math.floor(options.ttlSeconds)))
-    : 60;
+  let ttlSeconds = 60;
+  if (options.ttlSeconds !== undefined && options.ttlSeconds !== null) {
+    if (typeof options.ttlSeconds !== 'number' || !Number.isFinite(options.ttlSeconds) || options.ttlSeconds <= 0) {
+      throw new CapabilitySecurityError(
+        `Invalid ttlSeconds: ${options.ttlSeconds}. Must be a finite positive number between 1 and 300.`,
+        'INVALID_TTL'
+      );
+    }
+    ttlSeconds = Math.max(1, Math.min(300, Math.floor(options.ttlSeconds)));
+  }
 
   const now = Date.now();
   const expiresAt = now + (ttlSeconds * 1000);
@@ -291,11 +298,11 @@ export function verifyCapability(
     };
   }
 
-  if (typeof capability.nonce !== 'string' || !/^[0-9a-f]{16,}$/i.test(capability.nonce)) {
+  if (typeof capability.nonce !== 'string' || !/^[0-9a-f]{32}$/i.test(capability.nonce)) {
     return {
       valid: false,
       code: 'MALFORMED_NONCE',
-      error: 'Capability nonce must be a hex string of at least 16 characters',
+      error: 'Capability nonce must be a 32-character hexadecimal string',
     };
   }
 
@@ -347,6 +354,40 @@ export function verifyCapability(
       valid: false,
       code: 'MALFORMED_CONSTRAINTS',
       error: 'Capability constraints must be an object',
+    };
+  }
+
+  const { maxBytes, maxObjects, requireSnapshot, dryRunOnly } = capability.constraints;
+
+  if (maxBytes !== null && (!Number.isFinite(maxBytes) || !Number.isSafeInteger(maxBytes) || maxBytes < 0)) {
+    return {
+      valid: false,
+      code: 'MALFORMED_CONSTRAINTS',
+      error: 'Capability constraint "maxBytes" must be a non-negative safe integer or null',
+    };
+  }
+
+  if (maxObjects !== null && (!Number.isFinite(maxObjects) || !Number.isSafeInteger(maxObjects) || maxObjects < 0)) {
+    return {
+      valid: false,
+      code: 'MALFORMED_CONSTRAINTS',
+      error: 'Capability constraint "maxObjects" must be a non-negative safe integer or null',
+    };
+  }
+
+  if (typeof requireSnapshot !== 'boolean') {
+    return {
+      valid: false,
+      code: 'MALFORMED_CONSTRAINTS',
+      error: 'Capability constraint "requireSnapshot" must be a boolean',
+    };
+  }
+
+  if (typeof dryRunOnly !== 'boolean') {
+    return {
+      valid: false,
+      code: 'MALFORMED_CONSTRAINTS',
+      error: 'Capability constraint "dryRunOnly" must be a boolean',
     };
   }
 

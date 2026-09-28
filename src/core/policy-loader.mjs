@@ -7,6 +7,11 @@
 import { readFileSync } from 'node:fs';
 import { computeCanonicalSha256, deepFreeze } from './canonical-json.mjs';
 export { computeCanonicalSha256 as computePolicyHash };
+
+/**
+ * Symbol brand applied exclusively to authentic compiled policies.
+ */
+export const COMPILED_POLICY_BRAND = Symbol.for('brumm.compiled.policy');
 import {
   DecisionOutcome,
   ValidDefaultEffects,
@@ -667,10 +672,69 @@ export function compilePolicy(rawPolicy) {
     defaultEffect,
     rules: compiledRules,
     hash,
+    [COMPILED_POLICY_BRAND]: true,
   };
 
   // 3. Deep freeze to prevent any post-compilation mutation
   return deepFreeze(compiled);
+}
+
+/**
+ * Strictly verifies whether an object is an authentic, deeply immutable, compiled policy.
+ * Validates brand identity, immutability, structure, and verifies that the canonical SHA-256
+ * digest matches the compiled policy structure.
+ *
+ * @param {any} policy
+ * @returns {boolean}
+ */
+export function isCompiledPolicy(policy) {
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) {
+    return false;
+  }
+
+  if (policy[COMPILED_POLICY_BRAND] !== true) {
+    return false;
+  }
+
+  if (!Object.isFrozen(policy)) {
+    return false;
+  }
+
+  if (typeof policy.hash !== 'string' || !/^[0-9a-f]{64}$/.test(policy.hash)) {
+    return false;
+  }
+
+  if (!Array.isArray(policy.rules)) {
+    return false;
+  }
+
+  // Cryptographic integrity verification: recompute canonical SHA-256
+  try {
+    const normalizedStructure = {
+      name: typeof policy.name === 'string' ? policy.name : 'unnamed-policy',
+      version: typeof policy.version === 'string' ? policy.version : '1.0',
+      defaultEffect: (policy.defaultEffect || 'DENY').toUpperCase(),
+      rules: policy.rules.map(r => ({
+        id: r.id,
+        effect: r.effect,
+        agent: r.agentPattern,
+        action: r.actionPattern,
+        resource: r.resourcePattern,
+        environment: r.environmentPattern,
+        reasons: r.reasons,
+        constraints: r.constraints,
+        critical: Boolean(r.isCriticalProtection),
+      })),
+    };
+    const expectedHash = computeCanonicalSha256(normalizedStructure);
+    if (expectedHash !== policy.hash) {
+      return false;
+    }
+  } catch {
+    return false;
+  }
+
+  return true;
 }
 
 /**

@@ -83,8 +83,8 @@ const BINARY_MULTIPLIERS = {
  */
 export function parseByteSize(sizeStr) {
   if (typeof sizeStr === 'number') {
-    if (!Number.isFinite(sizeStr) || sizeStr < 0) {
-      throw new TypeError(`Invalid byte size number: ${sizeStr}. Must be a finite non-negative number.`);
+    if (!Number.isFinite(sizeStr) || sizeStr < 0 || !Number.isSafeInteger(sizeStr)) {
+      throw new TypeError(`Invalid byte size number: ${sizeStr}. Must be a safe non-negative integer.`);
     }
     return Math.floor(sizeStr);
   }
@@ -103,21 +103,24 @@ export function parseByteSize(sizeStr) {
   const val = parseFloat(match[1]);
   const unit = match[2];
 
+  let bytes;
   if (!unit || unit === 'B') {
-    return Math.floor(val);
+    bytes = Math.floor(val);
+  } else if (unit in BINARY_MULTIPLIERS) {
+    bytes = Math.floor(val * BINARY_MULTIPLIERS[unit]);
+  } else if (unit in DECIMAL_MULTIPLIERS) {
+    bytes = Math.floor(val * DECIMAL_MULTIPLIERS[unit]);
+  } else {
+    throw new TypeError(
+      `Invalid byte size unit "${unit}" in "${sizeStr}". Supported units: B, KB, MB, GB, TB (decimal) or KiB, MiB, GiB, TiB (binary).`
+    );
   }
 
-  if (unit in BINARY_MULTIPLIERS) {
-    return Math.floor(val * BINARY_MULTIPLIERS[unit]);
+  if (!Number.isSafeInteger(bytes) || bytes < 0) {
+    throw new TypeError(`Byte size "${sizeStr}" exceeds safe integer range (Number.MAX_SAFE_INTEGER).`);
   }
 
-  if (unit in DECIMAL_MULTIPLIERS) {
-    return Math.floor(val * DECIMAL_MULTIPLIERS[unit]);
-  }
-
-  throw new TypeError(
-    `Invalid byte size unit "${unit}" in "${sizeStr}". Supported units: B, KB, MB, GB, TB (decimal) or KiB, MiB, GiB, TiB (binary).`
-  );
+  return bytes;
 }
 
 /**

@@ -42,7 +42,9 @@ import {
 } from './core/identity.mjs';
 import { evaluatePolicy } from './core/policy-engine.mjs';
 import {
+  COMPILED_POLICY_BRAND,
   compilePolicy,
+  isCompiledPolicy,
   loadPolicyFile,
   parseYamlSubset,
   validatePolicySchema,
@@ -65,10 +67,10 @@ export function createGuard(options = {}) {
 
   if (typeof options.policy === 'string') {
     policy = loadPolicyFile(options.policy);
+  } else if (isCompiledPolicy(options.policy)) {
+    policy = options.policy;
   } else if (options.policy && typeof options.policy === 'object') {
-    policy = (options.policy.hash && typeof options.policy.hash === 'string')
-      ? options.policy
-      : compilePolicy(options.policy);
+    policy = compilePolicy(options.policy);
   } else {
     throw new TypeError('options.policy must be a valid file path string or policy object');
   }
@@ -169,6 +171,8 @@ export {
   computeCanonicalSha256,
   deepFreeze,
   compilePolicy,
+  isCompiledPolicy,
+  COMPILED_POLICY_BRAND,
   loadPolicyFile,
   parseYamlSubset,
   validatePolicySchema,

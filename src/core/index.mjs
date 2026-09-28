@@ -33,8 +33,10 @@ export {
 export { normalizeActionRequest, normalizeAgentContext } from './identity.mjs';
 export { evaluatePolicy } from './policy-engine.mjs';
 export {
+  COMPILED_POLICY_BRAND,
   compilePolicy,
   computePolicyHash,
+  isCompiledPolicy,
   loadPolicyFile,
   parseYamlSubset,
   validatePolicySchema,
