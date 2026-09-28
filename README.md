@@ -1,0 +1,84 @@
+# Brumm 🐻🛡️
+> *Also known as **Brummbär** // The "Denial Smart Boss" for Autonomous AI Agents*
+
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](LICENSE)
+[![Status](https://img.shields.io/badge/Status-Research_&_Architecture-orange.svg)](#)
+[![Ecosystem](https://img.shields.io/badge/Ecosystem-Hetzer_&_Jagdpanzer-purple.svg)](#)
+
+**Brumm** is an agentic governance and constraint engine that prevents catastrophic execution errors by autonomous AI agents. Acting as the senior, curmudgeonly "Denial Leader" in your workflow, Brumm challenges flawed agent assumptions, computes blast radiuses, and replaces destructive actions with minimal, reversible capabilities (JEV).
+
+---
+
+## 💡 The Problem: The "Honest Mistake"
+
+Most agent security frameworks defend against malicious prompt injection. But in practice, **the most dangerous agent is often authorized, non-malicious, and honest**:
+
+```text
+User:   "Free up disk space."
+Agent:  Finds 700 GB of apparently unused data in production.
+Agent:  Executes `rm -rf /data/*`.
+Agent:  Reports "Cleanup completed successfully!"
+```
+
+The agent followed its internal reasoning correctly. The failure was that the system granted it unconstrained, irreversible capability.
+
+---
+
+## 🛡️ Brumm's Role: The Smart Denial Leader
+
+Brumm does not just say a blind, frustrating "NO". It applies **Constructive Refusal**:
+
+```text
+Agent Action Request (e.g. DELETE 700GB / Request AWS Admin Key)
+      |
+      v
+[ BRUMM GOVERNANCE GATE ]
+  +-- 1. Challenge Premise      -> "Why is this needed? Is the premise factually true?"
+  +-- 2. Compute Blast Radius   -> Volume, environment, reversibility, dependency tree.
+  +-- 3. Safe Transformation    -> DELETE -> SNAPSHOT -> DRY-RUN -> QUARANTINE.
+  +-- 4. Dynamic Capability     -> Issue ephemeral, 60-second, audience-bound JEV lease.
+      |
+      +---> DENY with rationale & guidance (if premise is flawed)
+      +---> CONSTRAIN & EXECUTE (if safe transformation exists)
+      +---> ESCALATE (if critical & irreversible)
+```
+
+---
+
+## 📑 Specification & Documentation Index
+
+Brumm is specified across 15 modular architecture blueprints located in [`docs/`](docs/):
+
+| Document | Purpose |
+|---|---|
+| 🛡️ **[`docs/AGENTIC-SAFETY.md`](docs/AGENTIC-SAFETY.md)** | The Honest Mistake Problem, Blast Radius factors, and safe transformation pipelines. |
+| 🏛️ **[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md)** | Target control plane: Agent Identity, JEV Engine, Memory Guard, Tool Guard, Risk Engine. |
+| 🔑 **[`docs/CAPABILITY-MODEL.md`](docs/CAPABILITY-MODEL.md)** | Contextual, bounded dynamic capabilities vs broad static bearer credentials. |
+| 📐 **[`docs/DESIGN-PRINCIPLES.md`](docs/DESIGN-PRINCIPLES.md)** | 10 foundational design principles: Least authority, bounded blast radius, fail-closed. |
+| 🧪 **[`docs/EXAMPLES.md`](docs/EXAMPLES.md)** | Concrete walkthroughs: DB migrations, PII customer support, cleanup, release gates. |
+| ⚡ **[`docs/JEV.md`](docs/JEV.md)** | The JEV execution model: Intent + Context + Policy + Risk $\to$ Dynamic Capability. |
+| 🔌 **[`docs/MCP-SECURITY.md`](docs/MCP-SECURITY.md)** | Tool boundary enforcement: MCP request argument inspection and response sanitization. |
+| 🧠 **[`docs/MEMORY-SECURITY.md`](docs/MEMORY-SECURITY.md)** | RAG & Vector Memory Guard: Controlled disclosure, memory classification, egress DLP. |
+| ❓ **[`docs/OPEN-QUESTIONS.md`](docs/OPEN-QUESTIONS.md)** | 15 open engineering and cryptographic challenges (attestation, capability tokens). |
+| ⚖️ **[`docs/POLICY-ENGINE.md`](docs/POLICY-ENGINE.md)** | Deterministic evaluation precedence over LLM self-policing; `brumm policy test` CLI. |
+| 🗺️ **[`docs/ROADMAP.md`](docs/ROADMAP.md)** | 7-phase evolution: Foundation $\to$ Secrets $\to$ MCP $\to$ Memory $\to$ Execution $\to$ JEV $\to$ Platform. |
+| 🔐 **[`docs/SECRET-SECURITY.md`](docs/SECRET-SECURITY.md)** | Brokered capabilities, canary credentials, anti-reflection, and memory dump resistance. |
+| ☣️ **[`docs/THREAT-MODEL.md`](docs/THREAT-MODEL.md)** | Scoped threat analysis: Honest mistakes, indirect prompt injection, confused deputies. |
+| 🔭 **[`docs/VISION.md`](docs/VISION.md)** | The core manifesto: From credential protection to autonomous agent safety. |
+| 📖 **[`docs/README-DOCS.md`](docs/README-DOCS.md)** | Documentation reading guide and cross-references. |
+
+---
+
+## 🤝 Ecosystem Lineage
+
+Brumm operates alongside the Hetzer armor ecosystem:
+
+1. **[Hetzer](https://github.com/agunggnn/hetzer)** 🛡️: Single-command runtime armor, AES-256-GCM Grimoire vault, stream redactor, pre-commit hook, loopback HTTP credential broker.
+2. **[Jagdpanzer](https://github.com/agunggnn/jagdpanzer)** 🚜: Multi-container stack orchestration, persistent vector/graph cognitive memory (Cognee), fleet ops.
+3. **[Brumm](https://github.com/agunggnn/brumm)** 🐻: Agentic governance, Socratic refusal engine, blast radius containment, and JEV capability arbiter.
+
+---
+
+## 📄 License
+
+Distributed under the **Apache-2.0** License.

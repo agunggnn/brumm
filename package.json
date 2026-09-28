@@ -1,0 +1,26 @@
+{
+  "name": "@agunggnn/brumm",
+  "version": "0.1.0",
+  "description": "The Denial Smart Boss for AI Agents: Socratic refusal, blast radius containment, and JEV capability governance.",
+  "type": "module",
+  "main": "index.mjs",
+  "keywords": [
+    "ai-agent",
+    "agentic-safety",
+    "blast-radius",
+    "jev",
+    "capability-security",
+    "denial-boss",
+    "mcp-security",
+    "brummbar"
+  ],
+  "author": "Agung",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/agunggnn/brumm.git"
+  },
+  "engines": {
+    "node": ">=22.5.0"
+  }
+}
