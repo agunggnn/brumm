@@ -748,3 +748,389 @@ describe('Milestone P2.3.1: Strict Boolean Signal Validation in execute()', () =
     assert.equal(executorInvoked, true);
   });
 });
+
+const TIERED_SIZE_POLICY = compilePolicy({
+  name: 'tiered-size-policy',
+  version: '1.0',
+  defaultEffect: 'DENY',
+  rules: [
+    {
+      id: 'tiered-store-rule',
+      effect: 'ALLOW',
+      agent: 'storage-agent',
+      action: 'store',
+      resource: 'storage/large/**',
+      constraints: {
+        absolute_max_size: '200MB',
+      },
+    },
+  ],
+});
+
+describe('Milestone P2.3.2: Execution Parameter Measurement Binding & Blast-Radius Bypass Defense', () => {
+  const guard = {
+    policy: MEASUREMENTS_POLICY,
+    evaluate: (req, ctx) => evaluatePolicy(MEASUREMENTS_POLICY, req, ctx),
+  };
+  const executionGuard = createExecutionGuard({ guard, signingKey: SIGNING_KEY });
+
+  const tieredGuard = {
+    policy: TIERED_SIZE_POLICY,
+    evaluate: (req, ctx) => evaluatePolicy(TIERED_SIZE_POLICY, req, ctx),
+  };
+  const tieredExecutionGuard = createExecutionGuard({ guard: tieredGuard, signingKey: SIGNING_KEY });
+
+  it('blocks concrete attack: execution params size (500MB) bypasses authorized request (10MB) and exceeds capability (50MB)', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+      return { status: 'STORED' };
+    }
+
+    const issuedReq = { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' };
+    const context = { agentId: 'storage-agent' };
+    const decision = guard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedStore = executionGuard.protect('store', mockExecutor);
+
+    // Attacker passes 10MB in request but 500MB in execution params
+    await assert.rejects(
+      async () => {
+        await protectedStore(
+          { path: 'storage/bytes/data.bin', size: '500MB' },
+          { capability, request: { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' }, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'BYTE_LIMIT_EXCEEDED');
+        assert.match(err.message, /exceeds/);
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+
+  it('blocks execution when params size (100MB) exceeds authorized request (10MB) even when capability allows up to 200MB', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+      return { status: 'STORED' };
+    }
+
+    const issuedReq = { action: 'store', resource: 'storage/large/data.bin', size: '10MB' };
+    const context = { agentId: 'storage-agent' };
+    const decision = tieredGuard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedStore = tieredExecutionGuard.protect('store', mockExecutor);
+
+    // 100MB is within capability (200MB), but exceeds authorized request (10MB)
+    await assert.rejects(
+      async () => {
+        await protectedStore(
+          { path: 'storage/large/data.bin', size: '100MB' },
+          { capability, request: { action: 'store', resource: 'storage/large/data.bin', size: '10MB' }, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'BYTE_LIMIT_EXCEEDED');
+        assert.match(err.message, /exceeds authorized request size/);
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+
+  it('blocks execution when params size exceeds capability lease limit when request context is omitted', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+    }
+
+    const issuedReq = { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' };
+    const context = { agentId: 'storage-agent' };
+    const decision = guard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedStore = executionGuard.protect('store', mockExecutor);
+
+    await assert.rejects(
+      async () => {
+        await protectedStore(
+          { path: 'storage/bytes/data.bin', size: '100MB' },
+          { capability, context } // No request passed!
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'BYTE_LIMIT_EXCEEDED');
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+
+  it('allows execution when params size is safely bounded below authorized request size', async () => {
+    let executorInvoked = false;
+    let receivedParams = null;
+    async function mockExecutor(params) {
+      executorInvoked = true;
+      receivedParams = params;
+      return { status: 'STORED', size: params.size };
+    }
+
+    const issuedReq = { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' };
+    const context = { agentId: 'storage-agent' };
+    const decision = guard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedStore = executionGuard.protect('store', mockExecutor);
+
+    // Authorized for 10MB, executing with 5MB (safely bounded)
+    const res = await protectedStore(
+      { path: 'storage/bytes/data.bin', size: '5MB' },
+      { capability, request: { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' }, context }
+    );
+
+    assert.equal(executorInvoked, true);
+    assert.equal(res.status, 'STORED');
+    assert.equal(receivedParams.size, '5MB');
+  });
+
+  it('blocks execution when params object count exceeds authorized request count', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+    }
+
+    const issuedReq = { action: 'batch', resource: 'storage/objects/batch1', count: 5 };
+    const context = { agentId: 'storage-agent' };
+    const decision = guard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedBatch = executionGuard.protect('batch', mockExecutor);
+
+    await assert.rejects(
+      async () => {
+        await protectedBatch(
+          { path: 'storage/objects/batch1', count: 20 },
+          { capability, request: { action: 'batch', resource: 'storage/objects/batch1', count: 5 }, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'OBJECT_LIMIT_EXCEEDED');
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+
+  it('blocks execution when params candidate byte keys (bytes, contentLength) exceed capability limit', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+    }
+
+    const issuedReq = { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' };
+    const context = { agentId: 'storage-agent' };
+    const decision = guard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedStore = executionGuard.protect('store', mockExecutor);
+
+    // Using `bytes` key
+    await assert.rejects(
+      async () => {
+        await protectedStore(
+          { path: 'storage/bytes/data.bin', bytes: 524288000 }, // 500MB
+          { capability, request: { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' }, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'BYTE_LIMIT_EXCEEDED');
+        return true;
+      }
+    );
+
+    // Using `contentLength` key
+    await assert.rejects(
+      async () => {
+        await protectedStore(
+          { path: 'storage/bytes/data.bin', contentLength: '500MB' },
+          { capability, request: { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' }, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'BYTE_LIMIT_EXCEEDED');
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+
+  it('blocks execution when conflicting candidate byte size keys are present in params', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+    }
+
+    const issuedReq = { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' };
+    const context = { agentId: 'storage-agent' };
+    const decision = guard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedStore = executionGuard.protect('store', mockExecutor);
+
+    await assert.rejects(
+      async () => {
+        await protectedStore(
+          { path: 'storage/bytes/data.bin', size: '10MB', bytes: 20971520 }, // 10MB vs 20MB conflict!
+          { capability, request: { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' }, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'PARAMETER_SUBSTITUTION_DETECTED');
+        assert.match(err.message, /conflicting byte size/);
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+
+  it('blocks execution when conflicting candidate object count keys are present in params', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+    }
+
+    const issuedReq = { action: 'batch', resource: 'storage/objects/batch1', count: 5 };
+    const context = { agentId: 'storage-agent' };
+    const decision = guard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedBatch = executionGuard.protect('batch', mockExecutor);
+
+    await assert.rejects(
+      async () => {
+        await protectedBatch(
+          { path: 'storage/objects/batch1', count: 5, requestedCount: 8 }, // 5 vs 8 conflict!
+          { capability, request: { action: 'batch', resource: 'storage/objects/batch1', count: 5 }, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'PARAMETER_SUBSTITUTION_DETECTED');
+        assert.match(err.message, /conflicting object count/);
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+
+  it('rejects malformed byte size in params with MALFORMED_MEASUREMENT', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+    }
+
+    const issuedReq = { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' };
+    const context = { agentId: 'storage-agent' };
+    const decision = guard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedStore = executionGuard.protect('store', mockExecutor);
+
+    await assert.rejects(
+      async () => {
+        await protectedStore(
+          { path: 'storage/bytes/data.bin', size: 'INVALID_50_FOOBAR' },
+          { capability, request: { action: 'store', resource: 'storage/bytes/data.bin', size: '10MB' }, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'MALFORMED_MEASUREMENT');
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+
+  it('rejects malformed object count in params with MALFORMED_MEASUREMENT', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+    }
+
+    const issuedReq = { action: 'batch', resource: 'storage/objects/batch1', count: 5 };
+    const context = { agentId: 'storage-agent' };
+    const decision = guard.evaluate(issuedReq, context);
+    const capability = issueCapability({ decision, request: issuedReq, context, options: { signingKey: SIGNING_KEY } });
+
+    const protectedBatch = executionGuard.protect('batch', mockExecutor);
+
+    await assert.rejects(
+      async () => {
+        await protectedBatch(
+          { path: 'storage/objects/batch1', count: -5 },
+          { capability, request: { action: 'batch', resource: 'storage/objects/batch1', count: 5 }, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'MALFORMED_MEASUREMENT');
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+
+  it('enforces measurement binding in executionGuard.execute() pipeline when parameters exceed request size', async () => {
+    let executorInvoked = false;
+    async function mockExecutor() {
+      executorInvoked = true;
+      return { status: 'STORED' };
+    }
+
+    await assert.rejects(
+      async () => {
+        await executionGuard.execute(
+          {
+            action: 'store',
+            resource: 'storage/bytes/data.bin',
+            size: '10MB',
+            parameters: {
+              path: 'storage/bytes/data.bin',
+              size: '500MB', // Attack via parameters!
+            },
+          },
+          { agentId: 'storage-agent' },
+          mockExecutor
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'BYTE_LIMIT_EXCEEDED');
+        return true;
+      }
+    );
+
+    assert.equal(executorInvoked, false);
+  });
+});

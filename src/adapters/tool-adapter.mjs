@@ -10,6 +10,7 @@ import {
   issueCapability,
   verifyCapability,
 } from '../core/capability.mjs';
+import { parseByteSize } from '../core/decision.mjs';
 import { ExecutionSecurityError } from '../core/errors.mjs';
 import { normalizeActionRequest } from '../core/identity.mjs';
 
@@ -148,14 +149,190 @@ export function createExecutionGuard(options = {}) {
           checkResourceTarget('bucket/key', s3Uri);
         }
 
-        // 3. Atomic Verification + Nonce Consumption
-        const effectiveRequest = request || {
-          action: capability.action,
-          resource: capability.resource,
-          size: params.size !== undefined ? params.size : params.requestedBytes,
-          count: params.count !== undefined ? params.count : params.requestedCount,
-          hasSnapshot: params.hasSnapshot !== undefined ? params.hasSnapshot : params.snapshot,
-          isDryRun: params.isDryRun !== undefined ? params.isDryRun : params.dryRun,
+        // 3. Execution Parameter Measurement Extraction & Validation:
+        // Protect against capability blast-radius bypass where caller invokes executor with params exceeding lease or authorized request
+        const CANDIDATE_BYTE_KEYS = [
+          'size',
+          'bytes',
+          'requestedBytes',
+          'byteLength',
+          'contentLength',
+          'byteSize',
+        ];
+
+        const CANDIDATE_COUNT_KEYS = [
+          'count',
+          'requestedCount',
+          'objectCount',
+          'itemCount',
+        ];
+
+        let paramsBytes = null;
+        let paramsBytesKey = null;
+
+        for (const key of CANDIDATE_BYTE_KEYS) {
+          const val = params[key];
+          if (val !== undefined && val !== null) {
+            let parsed;
+            try {
+              parsed = parseByteSize(val);
+            } catch (err) {
+              throw new ExecutionSecurityError(
+                `Execution blocked for tool "${toolName}": invalid byte size parameter "${key}": ${err.message}`,
+                'MALFORMED_MEASUREMENT'
+              );
+            }
+            if (paramsBytes !== null && paramsBytes !== parsed) {
+              throw new ExecutionSecurityError(
+                `Parameter substitution attack detected: conflicting byte size parameters in execution payload ("${paramsBytesKey}"=${paramsBytes}B vs "${key}"=${parsed}B)`,
+                'PARAMETER_SUBSTITUTION_DETECTED'
+              );
+            }
+            paramsBytes = parsed;
+            paramsBytesKey = key;
+          }
+        }
+
+        let paramsCount = null;
+        let paramsCountKey = null;
+
+        for (const key of CANDIDATE_COUNT_KEYS) {
+          const val = params[key];
+          if (val !== undefined && val !== null) {
+            let parsed;
+            if (typeof val === 'number') {
+              if (!Number.isSafeInteger(val) || val < 0) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": invalid object count parameter "${key}": ${val}. Must be a safe non-negative integer.`,
+                  'MALFORMED_MEASUREMENT'
+                );
+              }
+              parsed = val;
+            } else if (typeof val === 'string') {
+              const trimmed = val.trim();
+              if (!/^[0-9]+$/.test(trimmed)) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": invalid object count parameter "${key}": "${val}". Expected digits only.`,
+                  'MALFORMED_MEASUREMENT'
+                );
+              }
+              const num = Number(trimmed);
+              if (!Number.isSafeInteger(num) || num < 0) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": invalid object count parameter "${key}": "${val}". Exceeds safe integer range.`,
+                  'MALFORMED_MEASUREMENT'
+                );
+              }
+              parsed = num;
+            } else {
+              throw new ExecutionSecurityError(
+                `Execution blocked for tool "${toolName}": invalid object count parameter "${key}" type: ${typeof val}.`,
+                'MALFORMED_MEASUREMENT'
+              );
+            }
+
+            if (paramsCount !== null && paramsCount !== parsed) {
+              throw new ExecutionSecurityError(
+                `Parameter substitution attack detected: conflicting object count parameters in execution payload ("${paramsCountKey}"=${paramsCount} vs "${key}"=${parsed})`,
+                'PARAMETER_SUBSTITUTION_DETECTED'
+              );
+            }
+            paramsCount = parsed;
+            paramsCountKey = key;
+          }
+        }
+
+        // Extract authorized measurements from request context if present
+        let requestBytes = null;
+        let requestCount = null;
+
+        if (request && typeof request === 'object') {
+          const rawReqSize = request.requestedBytes !== undefined ? request.requestedBytes : request.size;
+          if (rawReqSize !== undefined && rawReqSize !== null) {
+            try {
+              requestBytes = parseByteSize(rawReqSize);
+            } catch (err) {
+              throw new ExecutionSecurityError(
+                `Execution blocked for tool "${toolName}": invalid byte size in request: ${err.message}`,
+                'MALFORMED_REQUEST'
+              );
+            }
+          }
+
+          const rawReqCount = request.requestedCount !== undefined ? request.requestedCount : request.count;
+          if (rawReqCount !== undefined && rawReqCount !== null) {
+            if (typeof rawReqCount === 'number') {
+              if (Number.isSafeInteger(rawReqCount) && rawReqCount >= 0) {
+                requestCount = rawReqCount;
+              }
+            } else if (typeof rawReqCount === 'string') {
+              const trimmed = rawReqCount.trim();
+              if (/^[0-9]+$/.test(trimmed)) {
+                const num = Number(trimmed);
+                if (Number.isSafeInteger(num) && num >= 0) {
+                  requestCount = num;
+                }
+              }
+            }
+          }
+        }
+
+        // A. Execution parameters must NOT exceed authorized request measurements
+        if (requestBytes !== null && paramsBytes !== null && paramsBytes > requestBytes) {
+          throw new ExecutionSecurityError(
+            `Execution blocked for tool "${toolName}": execution parameter size (${paramsBytes}B) exceeds authorized request size (${requestBytes}B)`,
+            'BYTE_LIMIT_EXCEEDED'
+          );
+        }
+
+        if (requestCount !== null && paramsCount !== null && paramsCount > requestCount) {
+          throw new ExecutionSecurityError(
+            `Execution blocked for tool "${toolName}": execution parameter object count (${paramsCount}) exceeds authorized request count (${requestCount})`,
+            'OBJECT_LIMIT_EXCEEDED'
+          );
+        }
+
+        // B. Execution parameters must NOT exceed capability lease limits
+        if (capability.constraints?.maxBytes !== null && paramsBytes !== null && paramsBytes > capability.constraints.maxBytes) {
+          throw new ExecutionSecurityError(
+            `Execution blocked for tool "${toolName}": execution parameter size (${paramsBytes}B) exceeds capability lease limit (${capability.constraints.maxBytes}B)`,
+            'BYTE_LIMIT_EXCEEDED'
+          );
+        }
+
+        if (capability.constraints?.maxObjects !== null && paramsCount !== null && paramsCount > capability.constraints.maxObjects) {
+          throw new ExecutionSecurityError(
+            `Execution blocked for tool "${toolName}": execution parameter object count (${paramsCount}) exceeds capability lease limit (${capability.constraints.maxObjects})`,
+            'OBJECT_LIMIT_EXCEEDED'
+          );
+        }
+
+        // 4. Construct Effective Request binding actual execution measurements
+        const effectiveSize = paramsBytes !== null
+          ? paramsBytes
+          : (requestBytes !== null ? requestBytes : undefined);
+
+        const effectiveCount = paramsCount !== null
+          ? paramsCount
+          : (requestCount !== null ? requestCount : undefined);
+
+        const effectiveHasSnapshot = params.hasSnapshot !== undefined
+          ? params.hasSnapshot
+          : (params.snapshot !== undefined ? params.snapshot : (request?.hasSnapshot ?? request?.snapshot));
+
+        const effectiveIsDryRun = params.isDryRun !== undefined
+          ? params.isDryRun
+          : (params.dryRun !== undefined ? params.dryRun : (request?.isDryRun ?? request?.dryRun));
+
+        const effectiveRequest = {
+          action: normalizedTool,
+          resource: (request && (request.resource || request.rawResource)) || capability.resource,
+          size: effectiveSize,
+          count: effectiveCount,
+          hasSnapshot: effectiveHasSnapshot,
+          isDryRun: effectiveIsDryRun,
+          justification: request?.justification,
+          parameters: params,
         };
 
         const effectiveContext = context || {
@@ -164,6 +341,7 @@ export function createExecutionGuard(options = {}) {
           user: capability.subject.user,
         };
 
+        // 5. Atomic Verification + Nonce Consumption
         const verification = verifyCapability(
           capability,
           guard.policy,
@@ -179,7 +357,7 @@ export function createExecutionGuard(options = {}) {
           );
         }
 
-        // 4. Inject verified immutable binding into execution params
+        // 6. Inject verified immutable binding into execution params
         const verifiedExecutionParams = Object.freeze({
           ...params,
           _authorizedResource: capability.resource,
@@ -187,7 +365,7 @@ export function createExecutionGuard(options = {}) {
           _authorizedBounds: Object.freeze({ ...capability.constraints }),
         });
 
-        // 5. Safely execute underlying tool
+        // 7. Safely execute underlying tool
         return await rawExecutor(verifiedExecutionParams, {
           capability,
           verified: true,
