@@ -30,10 +30,10 @@ import { normalizeActionRequest } from '../core/identity.mjs';
  * 8. Freezes the resulting snapshot deeply via deepFreeze()
  *
  * @param {object} rawParams Raw caller parameters
- * @param {number|object} [maxDepth=10] Maximum recursion depth or options object
+ * @param {number|object} [options=10] Maximum recursion depth or options object ({ maxDepth, maxBytes, maxObjects })
  * @returns {object} Deeply frozen, detached snapshot of execution parameters
  */
-export function materializeExecutionParams(rawParams, maxDepth = 10) {
+export function materializeExecutionParams(rawParams, options = 10) {
   if (rawParams === undefined || rawParams === null) {
     return Object.freeze({});
   }
@@ -45,9 +45,17 @@ export function materializeExecutionParams(rawParams, maxDepth = 10) {
     );
   }
 
-  const depthLimit = typeof maxDepth === 'object' && maxDepth !== null
-    ? (maxDepth.maxDepth ?? 10)
-    : (typeof maxDepth === 'number' ? maxDepth : 10);
+  const depthLimit = typeof options === 'object' && options !== null
+    ? (options.maxDepth ?? 10)
+    : (typeof options === 'number' ? options : 10);
+
+  const maxBytes = typeof options === 'object' && options !== null
+    ? (options.maxBytes ?? null)
+    : null;
+
+  const maxObjects = typeof options === 'object' && options !== null
+    ? (options.maxObjects ?? null)
+    : null;
 
   const ancestors = new Set();
 
@@ -99,6 +107,12 @@ export function materializeExecutionParams(rawParams, maxDepth = 10) {
 
     // Binary / ArrayBufferView types
     if (ArrayBuffer.isView(val)) {
+      if (maxBytes !== null && val.byteLength > maxBytes) {
+        throw new ExecutionSecurityError(
+          `Execution blocked: payload size (${val.byteLength}B) exceeds quota limit (${maxBytes}B)`,
+          'BYTE_LIMIT_EXCEEDED'
+        );
+      }
       for (const k of Reflect.ownKeys(val)) {
         if (typeof k === 'symbol') {
           throw new ExecutionSecurityError(
@@ -133,6 +147,12 @@ export function materializeExecutionParams(rawParams, maxDepth = 10) {
     }
 
     if (val instanceof ArrayBuffer) {
+      if (maxBytes !== null && val.byteLength > maxBytes) {
+        throw new ExecutionSecurityError(
+          `Execution blocked: payload size (${val.byteLength}B) exceeds quota limit (${maxBytes}B)`,
+          'BYTE_LIMIT_EXCEEDED'
+        );
+      }
       return val.slice(0);
     }
 
@@ -163,6 +183,12 @@ export function materializeExecutionParams(rawParams, maxDepth = 10) {
 
     // Arrays
     if (Array.isArray(val)) {
+      if (maxObjects !== null && val.length > maxObjects) {
+        throw new ExecutionSecurityError(
+          `Execution blocked: array item count (${val.length}) exceeds quota limit (${maxObjects})`,
+          'OBJECT_LIMIT_EXCEEDED'
+        );
+      }
       ancestors.add(val);
       try {
         for (const k of Reflect.ownKeys(val)) {
@@ -342,11 +368,127 @@ export function createExecutionGuard(options = {}) {
           }
         }
 
-        // 2. Materialize execution parameters into a static, deeply immutable snapshot
-        // (enforces data-only properties, blocks getters/setters/proxies, prevents TOCTOU mutation)
-        const snapshot = materializeExecutionParams(params);
+        // 2. Bounded Quota Preflight Inspection:
+        // Inspect candidate measurements and payloads BEFORE materialization/cloning
+        // to prevent memory amplification and resource exhaustion from oversized payloads.
+        let preflightReqBytes = null;
+        if (request && typeof request === 'object') {
+          const rawSize = request.requestedBytes !== undefined ? request.requestedBytes : request.size;
+          if (rawSize !== undefined && rawSize !== null) {
+            try {
+              preflightReqBytes = parseByteSize(rawSize);
+            } catch {
+              // Defer to authoritative validation
+            }
+          }
+        }
 
-        // 3. Inject verified immutable binding into single execution params object
+        let preflightReqCount = null;
+        if (request && typeof request === 'object') {
+          const rawCount = request.requestedCount !== undefined ? request.requestedCount : request.count;
+          if (rawCount !== undefined && rawCount !== null) {
+            if (typeof rawCount === 'number' && Number.isSafeInteger(rawCount) && rawCount >= 0) {
+              preflightReqCount = rawCount;
+            } else if (typeof rawCount === 'string') {
+              const trimmed = rawCount.trim();
+              if (/^[0-9]+$/.test(trimmed)) {
+                const num = Number(trimmed);
+                if (Number.isSafeInteger(num) && num >= 0) preflightReqCount = num;
+              }
+            }
+          }
+        }
+
+        const capMaxBytes = capability.constraints?.maxBytes ?? null;
+        const capMaxObjects = capability.constraints?.maxObjects ?? null;
+
+        function getSafeParamProperty(obj, key) {
+          if (!obj || typeof obj !== 'object') return undefined;
+          const desc = Object.getOwnPropertyDescriptor(obj, key);
+          if (!desc || desc.get !== undefined || desc.set !== undefined) return undefined;
+          return desc.value;
+        }
+
+        function getPreflightPayloadLength(val) {
+          if (val === null || val === undefined) return null;
+          if (Buffer.isBuffer(val) || val instanceof ArrayBuffer || ArrayBuffer.isView(val)) {
+            return val.byteLength;
+          }
+          if (typeof val === 'string') {
+            return Buffer.byteLength(val, 'utf8');
+          }
+          return null;
+        }
+
+        if (params && typeof params === 'object' && !Array.isArray(params)) {
+          // Preflight candidate binary payloads before cloning
+          const CANDIDATE_PREFLIGHT_PAYLOAD_KEYS = ['body', 'content', 'data', 'payload'];
+          for (const pKey of CANDIDATE_PREFLIGHT_PAYLOAD_KEYS) {
+            let rawVal = getSafeParamProperty(params, pKey);
+            if (rawVal === undefined) {
+              const inputObj = getSafeParamProperty(params, 'input');
+              rawVal = getSafeParamProperty(inputObj, pKey);
+            }
+            const bLen = getPreflightPayloadLength(rawVal);
+            if (bLen !== null) {
+              if (preflightReqBytes !== null && bLen > preflightReqBytes) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": execution parameter size (${bLen}B) exceeds authorized request size (${preflightReqBytes}B)`,
+                  'BYTE_LIMIT_EXCEEDED'
+                );
+              }
+              if (capMaxBytes !== null && bLen > capMaxBytes) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": execution parameter size (${bLen}B) exceeds capability lease limit (${capMaxBytes}B)`,
+                  'BYTE_LIMIT_EXCEEDED'
+                );
+              }
+            }
+          }
+
+          // Preflight candidate count-bearing arrays before cloning
+          const CANDIDATE_PREFLIGHT_ARRAY_KEYS = ['items', 'records', 'objects', 'keys', 'files'];
+          for (const aKey of CANDIDATE_PREFLIGHT_ARRAY_KEYS) {
+            let rawVal = getSafeParamProperty(params, aKey);
+            if (rawVal === undefined) {
+              const inputObj = getSafeParamProperty(params, 'input');
+              rawVal = getSafeParamProperty(inputObj, aKey);
+            }
+            if (Array.isArray(rawVal)) {
+              const arrLen = rawVal.length;
+              if (preflightReqCount !== null && arrLen > preflightReqCount) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": execution parameter object count (${arrLen}) exceeds authorized request count (${preflightReqCount})`,
+                  'OBJECT_LIMIT_EXCEEDED'
+                );
+              }
+              if (capMaxObjects !== null && arrLen > capMaxObjects) {
+                throw new ExecutionSecurityError(
+                  `Execution blocked for tool "${toolName}": execution parameter object count (${arrLen}) exceeds capability lease limit (${capMaxObjects})`,
+                  'OBJECT_LIMIT_EXCEEDED'
+                );
+              }
+            }
+          }
+        }
+
+        // 3. Materialize execution parameters into a static, deeply immutable snapshot
+        // (enforces data-only properties, blocks getters/setters/proxies, prevents TOCTOU mutation, bounds deep allocations)
+        const effectiveQuotaBytes = (preflightReqBytes !== null && capMaxBytes !== null)
+          ? Math.min(preflightReqBytes, capMaxBytes)
+          : (preflightReqBytes ?? capMaxBytes);
+
+        const effectiveQuotaObjects = (preflightReqCount !== null && capMaxObjects !== null)
+          ? Math.min(preflightReqCount, capMaxObjects)
+          : (preflightReqCount ?? capMaxObjects);
+
+        const snapshot = materializeExecutionParams(params, {
+          maxDepth: 10,
+          maxBytes: effectiveQuotaBytes,
+          maxObjects: effectiveQuotaObjects,
+        });
+
+        // 4. Inject verified immutable binding into single execution params object
         const verifiedExecutionParams = Object.freeze({
           ...snapshot,
           _authorizedResource: capability.resource,

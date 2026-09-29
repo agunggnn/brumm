@@ -553,3 +553,253 @@ describe('Milestone P2.3.4: Capabilities Without Relevant Bounds & Wildcard Reso
     assert.equal(pingInvoked, true);
   });
 });
+
+describe('Milestone P2.3.5: Execution Boundary TOCTOU Defense & Bounded Quota Preflight', () => {
+  it('blocks getter changing value between reads (UNTRUSTED_PARAMETER_ACCESSOR)', async () => {
+    const request = { action: 'write', resource: 'data/report.pdf', size: '1MB', count: 1 };
+    const context = { agentId: 'worker-agent' };
+    const decision = guard.evaluate(request, context);
+    const capability = issueCapability({ decision, request, context, options: { signingKey: SIGNING_KEY } });
+
+    let rawExecuted = false;
+    const protectedWrite = executionGuard.protect('write', async () => {
+      rawExecuted = true;
+    });
+
+    let reads = 0;
+    const getterParams = {
+      get path() {
+        reads++;
+        return reads === 1 ? 'data/report.pdf' : '/etc/shadow';
+      },
+    };
+
+    await assert.rejects(
+      async () => {
+        await protectedWrite(getterParams, { capability, request, context });
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'UNTRUSTED_PARAMETER_ACCESSOR');
+        return true;
+      }
+    );
+
+    assert.equal(rawExecuted, false);
+  });
+
+  it('blocks Proxy parameter trapping property access (UNTRUSTED_PARAMETER_ACCESSOR)', async () => {
+    const request = { action: 'write', resource: 'data/report.pdf', size: '1MB', count: 1 };
+    const context = { agentId: 'worker-agent' };
+    const decision = guard.evaluate(request, context);
+    const capability = issueCapability({ decision, request, context, options: { signingKey: SIGNING_KEY } });
+
+    let rawExecuted = false;
+    const protectedWrite = executionGuard.protect('write', async () => {
+      rawExecuted = true;
+    });
+
+    let trapCalls = 0;
+    const proxyParams = new Proxy({ path: 'data/report.pdf' }, {
+      get(target, prop, receiver) {
+        trapCalls++;
+        if (prop === 'path') {
+          return trapCalls === 1 ? 'data/report.pdf' : '/etc/shadow';
+        }
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+
+    await assert.rejects(
+      async () => {
+        await protectedWrite(proxyParams, { capability, request, context });
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'UNTRUSTED_PARAMETER_ACCESSOR');
+        return true;
+      }
+    );
+
+    assert.equal(rawExecuted, false);
+  });
+
+  it('insulates execution from caller mutation of nested object after protect call', async () => {
+    const request = { action: 'write', resource: 'data/report.pdf', size: '1MB', count: 1 };
+    const context = { agentId: 'worker-agent' };
+    const decision = guard.evaluate(request, context);
+    const capability = issueCapability({ decision, request, context, options: { signingKey: SIGNING_KEY } });
+
+    let capturedParams = null;
+    const protectedWrite = executionGuard.protect('write', async (params) => {
+      capturedParams = params;
+      return { success: true };
+    });
+
+    const callerParams = {
+      path: 'data/report.pdf',
+      input: {
+        target: 'data/report.pdf',
+      },
+    };
+
+    const callPromise = protectedWrite(callerParams, { capability, request, context });
+
+    // Mutate caller's nested object immediately
+    callerParams.input.target = '/etc/shadow';
+    callerParams.path = '/etc/shadow';
+
+    const res = await callPromise;
+    assert.equal(res.success, true);
+    assert.ok(capturedParams);
+    assert.equal(capturedParams.path, 'data/report.pdf');
+    assert.equal(capturedParams.input.target, 'data/report.pdf');
+    assert.equal(Object.isFrozen(capturedParams.input), true);
+  });
+
+  it('insulates execution from caller mutation of array after protect call', async () => {
+    const request = { action: 'write', resource: 'data/batch', size: '1MB', count: 2 };
+    const context = { agentId: 'worker-agent' };
+    const decision = guard.evaluate(request, context);
+    const capability = issueCapability({ decision, request, context, options: { signingKey: SIGNING_KEY } });
+
+    let capturedParams = null;
+    const protectedWrite = executionGuard.protect('write', async (params) => {
+      capturedParams = params;
+      return { success: true };
+    });
+
+    const callerItems = ['item1', 'item2'];
+    const callerParams = {
+      path: 'data/batch',
+      items: callerItems,
+    };
+
+    const callPromise = protectedWrite(callerParams, { capability, request, context });
+
+    // Mutate caller's array
+    callerItems.push('item3', 'item4');
+
+    const res = await callPromise;
+    assert.equal(res.success, true);
+    assert.equal(capturedParams.items.length, 2);
+    assert.deepEqual(capturedParams.items, ['item1', 'item2']);
+    assert.equal(Object.isFrozen(capturedParams.items), true);
+  });
+
+  it('insulates execution from caller in-place mutation of Buffer payload after snapshot', async () => {
+    const request = { action: 'write', resource: 'data/blob.bin', size: '1MB', count: 1 };
+    const context = { agentId: 'worker-agent' };
+    const decision = guard.evaluate(request, context);
+    const capability = issueCapability({ decision, request, context, options: { signingKey: SIGNING_KEY } });
+
+    let capturedParams = null;
+    const protectedWrite = executionGuard.protect('write', async (params) => {
+      capturedParams = params;
+      return { success: true };
+    });
+
+    const originalBuffer = Buffer.from('unmodified content');
+    const callerParams = {
+      path: 'data/blob.bin',
+      body: originalBuffer,
+    };
+
+    const callPromise = protectedWrite(callerParams, { capability, request, context });
+
+    // Mutate buffer memory in-place
+    originalBuffer[0] = 0x5a; // 'Z'
+
+    const res = await callPromise;
+    assert.equal(res.success, true);
+    assert.equal(capturedParams.body.toString('utf8'), 'unmodified content');
+    assert.notEqual(capturedParams.body, originalBuffer);
+  });
+
+  it('guarantees rawExecutor receives detached deeply frozen snapshot', async () => {
+    const request = { action: 'write', resource: 'data/report.pdf', size: '1MB', count: 1 };
+    const context = { agentId: 'worker-agent' };
+    const decision = guard.evaluate(request, context);
+    const capability = issueCapability({ decision, request, context, options: { signingKey: SIGNING_KEY } });
+
+    let capturedParams = null;
+    const protectedWrite = executionGuard.protect('write', async (params) => {
+      capturedParams = params;
+      return { ok: true };
+    });
+
+    await protectedWrite(
+      { path: 'data/report.pdf', meta: { tag: 'pdf-doc' } },
+      { capability, request, context }
+    );
+
+    assert.equal(Object.isFrozen(capturedParams), true);
+    assert.equal(Object.isFrozen(capturedParams.meta), true);
+    assert.equal(capturedParams._authorizedResource, 'data/report.pdf');
+    assert.equal(capturedParams._authorizedAction, 'write');
+  });
+
+  it('bounded preflight rejects oversized Buffer before cloning/allocating memory', async () => {
+    // 20MB buffer exceeds 10MB capability maxBytes and 5MB request size
+    const request = { action: 'write', resource: 'data/large.bin', size: '5MB', count: 1 };
+    const context = { agentId: 'worker-agent' };
+    const decision = guard.evaluate(request, context);
+    const capability = issueCapability({ decision, request, context, options: { signingKey: SIGNING_KEY } });
+
+    let rawExecuted = false;
+    const protectedWrite = executionGuard.protect('write', async () => {
+      rawExecuted = true;
+    });
+
+    const oversizedBuffer = Buffer.alloc(20 * 1024 * 1024);
+
+    await assert.rejects(
+      async () => {
+        await protectedWrite(
+          { path: 'data/large.bin', body: oversizedBuffer },
+          { capability, request, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'BYTE_LIMIT_EXCEEDED');
+        assert.match(err.message, /exceeds (authorized request size|capability lease limit)/);
+        return true;
+      }
+    );
+
+    assert.equal(rawExecuted, false);
+  });
+
+  it('bounded preflight rejects oversized array before cloning/allocating memory', async () => {
+    // 15 items exceeds max_objects: 5
+    const request = { action: 'write', resource: 'data/batch', size: '1MB', count: 2 };
+    const context = { agentId: 'worker-agent' };
+    const decision = guard.evaluate(request, context);
+    const capability = issueCapability({ decision, request, context, options: { signingKey: SIGNING_KEY } });
+
+    let rawExecuted = false;
+    const protectedWrite = executionGuard.protect('write', async () => {
+      rawExecuted = true;
+    });
+
+    const oversizedArray = new Array(15).fill('item');
+
+    await assert.rejects(
+      async () => {
+        await protectedWrite(
+          { path: 'data/batch', items: oversizedArray },
+          { capability, request, context }
+        );
+      },
+      err => {
+        assert.ok(err instanceof ExecutionSecurityError);
+        assert.equal(err.code, 'OBJECT_LIMIT_EXCEEDED');
+        assert.match(err.message, /exceeds (authorized request count|capability lease limit)/);
+        return true;
+      }
+    );
+
+    assert.equal(rawExecuted, false);
+  });
+});
