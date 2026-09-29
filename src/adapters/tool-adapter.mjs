@@ -5,6 +5,7 @@
  * and parameter-to-resource binding directly before invocation of underlying tools.
  */
 
+import { types } from 'node:util';
 import { deepFreeze } from '../core/canonical-json.mjs';
 import { canonicalizeResource, matchResourcePattern } from '../core/canonical.mjs';
 import {
@@ -14,6 +15,248 @@ import {
 import { parseByteSize } from '../core/decision.mjs';
 import { ExecutionSecurityError } from '../core/errors.mjs';
 import { normalizeActionRequest } from '../core/identity.mjs';
+
+/**
+ * Materializes untrusted execution parameters into a static, deeply immutable snapshot.
+ *
+ * Enforces the following security invariants:
+ * 1. Rejects accessors (getters/setters) to prevent TOCTOU substitution (UNTRUSTED_PARAMETER_ACCESSOR)
+ * 2. Rejects Proxy objects to prevent dynamic value trapping (UNTRUSTED_PARAMETER_ACCESSOR)
+ * 3. Rejects prototype pollution keys: __proto__, constructor, prototype (PROTOTYPE_POLLUTION_DETECTED)
+ * 4. Rejects functions (UNTRUSTED_PARAMETER_FUNCTION) and symbols (UNTRUSTED_PARAMETER_SYMBOL)
+ * 5. Rejects circular references (CIRCULAR_PARAMETER_REFERENCE)
+ * 6. Enforces maximum recursion depth (PARAMETER_MAX_DEPTH_EXCEEDED)
+ * 7. Detaches binary data (Buffers, Uint8Arrays, ArrayBuffers) and Dates from caller references
+ * 8. Freezes the resulting snapshot deeply via deepFreeze()
+ *
+ * @param {object} rawParams Raw caller parameters
+ * @param {number|object} [maxDepth=10] Maximum recursion depth or options object
+ * @returns {object} Deeply frozen, detached snapshot of execution parameters
+ */
+export function materializeExecutionParams(rawParams, maxDepth = 10) {
+  if (rawParams === undefined || rawParams === null) {
+    return Object.freeze({});
+  }
+
+  if (typeof rawParams !== 'object' || Array.isArray(rawParams)) {
+    throw new ExecutionSecurityError(
+      'Execution parameters must be a plain object',
+      'INVALID_PARAMETERS'
+    );
+  }
+
+  const depthLimit = typeof maxDepth === 'object' && maxDepth !== null
+    ? (maxDepth.maxDepth ?? 10)
+    : (typeof maxDepth === 'number' ? maxDepth : 10);
+
+  const ancestors = new Set();
+
+  function materializeValue(val, depth) {
+    if (val === null || val === undefined) {
+      return val;
+    }
+
+    const valType = typeof val;
+
+    if (valType === 'function') {
+      throw new ExecutionSecurityError(
+        'Function values are not permitted in execution parameters',
+        'UNTRUSTED_PARAMETER_FUNCTION'
+      );
+    }
+
+    if (valType === 'symbol') {
+      throw new ExecutionSecurityError(
+        'Symbol values are not permitted in execution parameters',
+        'UNTRUSTED_PARAMETER_SYMBOL'
+      );
+    }
+
+    if (valType !== 'object') {
+      return val;
+    }
+
+    if (depth > depthLimit) {
+      throw new ExecutionSecurityError(
+        `Execution parameters exceed maximum allowed nesting depth of ${depthLimit}`,
+        'PARAMETER_MAX_DEPTH_EXCEEDED'
+      );
+    }
+
+    if (types.isProxy(val)) {
+      throw new ExecutionSecurityError(
+        'Untrusted parameter proxy detected in execution parameters',
+        'UNTRUSTED_PARAMETER_ACCESSOR'
+      );
+    }
+
+    if (ancestors.has(val)) {
+      throw new ExecutionSecurityError(
+        'Circular reference detected in execution parameters',
+        'CIRCULAR_PARAMETER_REFERENCE'
+      );
+    }
+
+    // Binary / ArrayBufferView types
+    if (ArrayBuffer.isView(val)) {
+      for (const k of Reflect.ownKeys(val)) {
+        if (typeof k === 'symbol') {
+          throw new ExecutionSecurityError(
+            'Symbol keys are not permitted in execution parameters',
+            'UNTRUSTED_PARAMETER_SYMBOL'
+          );
+        }
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+          throw new ExecutionSecurityError(
+            `Prototype pollution key "${k}" detected in execution parameters`,
+            'PROTOTYPE_POLLUTION_DETECTED'
+          );
+        }
+        const desc = Object.getOwnPropertyDescriptor(val, k);
+        if (!desc || desc.get !== undefined || desc.set !== undefined) {
+          throw new ExecutionSecurityError(
+            `Untrusted parameter accessor detected on property "${k}"`,
+            'UNTRUSTED_PARAMETER_ACCESSOR'
+          );
+        }
+      }
+      if (Buffer.isBuffer(val)) {
+        return Buffer.from(val);
+      }
+      if (val instanceof Uint8Array) {
+        return new Uint8Array(val.buffer.slice(val.byteOffset, val.byteOffset + val.byteLength));
+      }
+      if (val instanceof DataView) {
+        return new DataView(val.buffer.slice(val.byteOffset, val.byteOffset + val.byteLength));
+      }
+      return new val.constructor(val.buffer.slice(val.byteOffset, val.byteOffset + val.byteLength));
+    }
+
+    if (val instanceof ArrayBuffer) {
+      return val.slice(0);
+    }
+
+    if (val instanceof Date) {
+      for (const k of Reflect.ownKeys(val)) {
+        if (typeof k === 'symbol') {
+          throw new ExecutionSecurityError(
+            'Symbol keys are not permitted in execution parameters',
+            'UNTRUSTED_PARAMETER_SYMBOL'
+          );
+        }
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+          throw new ExecutionSecurityError(
+            `Prototype pollution key "${k}" detected in execution parameters`,
+            'PROTOTYPE_POLLUTION_DETECTED'
+          );
+        }
+        const desc = Object.getOwnPropertyDescriptor(val, k);
+        if (!desc || desc.get !== undefined || desc.set !== undefined) {
+          throw new ExecutionSecurityError(
+            `Untrusted parameter accessor detected on property "${k}"`,
+            'UNTRUSTED_PARAMETER_ACCESSOR'
+          );
+        }
+      }
+      return new Date(val.getTime());
+    }
+
+    // Arrays
+    if (Array.isArray(val)) {
+      ancestors.add(val);
+      try {
+        for (const k of Reflect.ownKeys(val)) {
+          if (typeof k === 'symbol') {
+            throw new ExecutionSecurityError(
+              'Symbol keys are not permitted in execution parameters',
+              'UNTRUSTED_PARAMETER_SYMBOL'
+            );
+          }
+          if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+            throw new ExecutionSecurityError(
+              `Prototype pollution key "${k}" detected in execution parameters`,
+              'PROTOTYPE_POLLUTION_DETECTED'
+            );
+          }
+          if (k === 'length') {
+            continue;
+          }
+          const desc = Object.getOwnPropertyDescriptor(val, k);
+          if (!desc || desc.get !== undefined || desc.set !== undefined) {
+            throw new ExecutionSecurityError(
+              `Untrusted parameter accessor detected on property "${k}"`,
+              'UNTRUSTED_PARAMETER_ACCESSOR'
+            );
+          }
+          if (!desc.enumerable) {
+            throw new ExecutionSecurityError(
+              `Non-enumerable property "${String(k)}" is not permitted in execution parameters`,
+              'INVALID_PARAMETERS'
+            );
+          }
+        }
+        const clonedArr = [];
+        for (let i = 0; i < val.length; i++) {
+          clonedArr.push(materializeValue(val[i], depth + 1));
+        }
+        return clonedArr;
+      } finally {
+        ancestors.delete(val);
+      }
+    }
+
+    // Plain objects
+    const proto = Object.getPrototypeOf(val);
+    if (proto !== Object.prototype && proto !== null) {
+      throw new ExecutionSecurityError(
+        'Invalid parameter object: expected plain object or permitted data type',
+        'INVALID_PARAMETERS'
+      );
+    }
+
+    ancestors.add(val);
+    try {
+      const keys = Reflect.ownKeys(val);
+      const clonedObj = {};
+
+      for (const k of keys) {
+        if (typeof k === 'symbol') {
+          throw new ExecutionSecurityError(
+            'Symbol keys are not permitted in execution parameters',
+            'UNTRUSTED_PARAMETER_SYMBOL'
+          );
+        }
+        if (k === '__proto__' || k === 'constructor' || k === 'prototype') {
+          throw new ExecutionSecurityError(
+            `Prototype pollution key "${k}" detected in execution parameters`,
+            'PROTOTYPE_POLLUTION_DETECTED'
+          );
+        }
+        const desc = Object.getOwnPropertyDescriptor(val, k);
+        if (!desc || desc.get !== undefined || desc.set !== undefined) {
+          throw new ExecutionSecurityError(
+            `Untrusted parameter accessor detected on property "${k}"`,
+            'UNTRUSTED_PARAMETER_ACCESSOR'
+          );
+        }
+        if (!desc.enumerable) {
+          throw new ExecutionSecurityError(
+            `Non-enumerable property "${String(k)}" is not permitted in execution parameters`,
+            'INVALID_PARAMETERS'
+          );
+        }
+        clonedObj[k] = materializeValue(desc.value, depth + 1);
+      }
+
+      return clonedObj;
+    } finally {
+      ancestors.delete(val);
+    }
+  }
+
+  const snapshot = materializeValue(rawParams, 0);
+  return deepFreeze(snapshot);
+}
 
 /**
  * Creates an Execution Guard that wraps underlying tools and enforces
@@ -99,6 +342,18 @@ export function createExecutionGuard(options = {}) {
           }
         }
 
+        // 2. Materialize execution parameters into a static, deeply immutable snapshot
+        // (enforces data-only properties, blocks getters/setters/proxies, prevents TOCTOU mutation)
+        const snapshot = materializeExecutionParams(params);
+
+        // 3. Inject verified immutable binding into single execution params object
+        const verifiedExecutionParams = Object.freeze({
+          ...snapshot,
+          _authorizedResource: capability.resource,
+          _authorizedAction: capability.action,
+          _authorizedBounds: Object.freeze({ ...capability.constraints }),
+        });
+
         const authorizedResource = capability.resource;
 
         const checkResourceTarget = (paramKey, targetVal) => {
@@ -129,12 +384,12 @@ export function createExecutionGuard(options = {}) {
 
         let verifiedResource = null;
 
-        // 2. Resource Parameter Binding:
+        // 4. Resource Parameter Binding:
         // An explicit contract is authoritative. Fallback scanner is advisory/defense-in-depth.
         if (contract && contract.extractResource) {
           let extracted;
           try {
-            extracted = contract.extractResource(params);
+            extracted = contract.extractResource(verifiedExecutionParams);
           } catch (err) {
             throw new ExecutionSecurityError(
               `Execution blocked for tool "${toolName}": contract.extractResource threw an error: ${err.message}`,
@@ -182,8 +437,8 @@ export function createExecutionGuard(options = {}) {
           ]);
 
           // Flat S3 composite
-          const bVal = params.bucket ?? params.Bucket;
-          const kVal = params.key ?? params.Key;
+          const bVal = verifiedExecutionParams.bucket ?? verifiedExecutionParams.Bucket;
+          const kVal = verifiedExecutionParams.key ?? verifiedExecutionParams.Key;
           let hasS3Composite = false;
           if (typeof bVal === 'string' && bVal.trim().length > 0 &&
               typeof kVal === 'string' && kVal.trim().length > 0) {
@@ -193,12 +448,12 @@ export function createExecutionGuard(options = {}) {
           }
 
           // Flat keys
-          for (const key of Object.keys(params)) {
+          for (const key of Object.keys(verifiedExecutionParams)) {
             if (hasS3Composite && (key === 'key' || key === 'Key' || key === 'bucket' || key === 'Bucket')) {
               continue;
             }
             if (CANDIDATE_RESOURCE_KEYS.has(key)) {
-              const val = params[key];
+              const val = verifiedExecutionParams[key];
               if (val !== undefined && val !== null) {
                 candidateTargets.push({ key, val });
               }
@@ -206,7 +461,7 @@ export function createExecutionGuard(options = {}) {
           }
 
           // Nested objects up to depth 2 (e.g. input.*, s3.*, file.*, request.*)
-          for (const [topKey, topVal] of Object.entries(params)) {
+          for (const [topKey, topVal] of Object.entries(verifiedExecutionParams)) {
             if (topVal && typeof topVal === 'object' && !Array.isArray(topVal) &&
                 !Buffer.isBuffer(topVal) && !(topVal instanceof Uint8Array) && !(topVal instanceof ArrayBuffer)) {
               const nB = topVal.bucket ?? topVal.Bucket;
@@ -243,7 +498,7 @@ export function createExecutionGuard(options = {}) {
           }
 
           // If capability is bound to a specific resource (not '*'), but params has caller properties and no candidate target was identified:
-          const callerParamKeys = Object.keys(params).filter(k => !k.startsWith('_authorized'));
+          const callerParamKeys = Object.keys(verifiedExecutionParams).filter(k => !k.startsWith('_authorized'));
           if (authorizedResource !== '*' && callerParamKeys.length > 0 && candidateTargets.length === 0) {
             throw new ExecutionSecurityError(
               `Execution blocked for tool "${toolName}": capability is bound to resource "${authorizedResource}", but execution parameters do not expose a recognizable resource binding and no tool contract was provided`,
@@ -263,7 +518,7 @@ export function createExecutionGuard(options = {}) {
         if (contract && contract.extractBytes) {
           let extractedBytes;
           try {
-            extractedBytes = contract.extractBytes(params);
+            extractedBytes = contract.extractBytes(verifiedExecutionParams);
           } catch (err) {
             throw new ExecutionSecurityError(
               `Execution blocked for tool "${toolName}": contract.extractBytes threw an error: ${err.message}`,
@@ -301,7 +556,7 @@ export function createExecutionGuard(options = {}) {
           ];
 
           for (const key of CANDIDATE_BYTE_KEYS) {
-            const val = params[key];
+            const val = verifiedExecutionParams[key];
             if (val !== undefined && val !== null) {
               let parsed;
               try {
@@ -337,7 +592,7 @@ export function createExecutionGuard(options = {}) {
           }
 
           for (const pKey of CANDIDATE_PAYLOAD_KEYS) {
-            const pVal = params[pKey] ?? (params.input && typeof params.input === 'object' ? params.input[pKey] : undefined);
+            const pVal = verifiedExecutionParams[pKey] ?? (verifiedExecutionParams.input && typeof verifiedExecutionParams.input === 'object' ? verifiedExecutionParams.input[pKey] : undefined);
             const actualBytes = getPayloadByteLength(pVal);
             if (actualBytes !== null) {
               if (paramsBytes !== null && actualBytes > paramsBytes) {
@@ -358,7 +613,7 @@ export function createExecutionGuard(options = {}) {
         if (contract && contract.extractCount) {
           let extractedCount;
           try {
-            extractedCount = contract.extractCount(params);
+            extractedCount = contract.extractCount(verifiedExecutionParams);
           } catch (err) {
             throw new ExecutionSecurityError(
               `Execution blocked for tool "${toolName}": contract.extractCount threw an error: ${err.message}`,
@@ -416,7 +671,7 @@ export function createExecutionGuard(options = {}) {
           ];
 
           for (const key of CANDIDATE_COUNT_KEYS) {
-            const val = params[key];
+            const val = verifiedExecutionParams[key];
             if (val !== undefined && val !== null) {
               let parsed;
               if (typeof val === 'number') {
@@ -464,7 +719,7 @@ export function createExecutionGuard(options = {}) {
           // Implicit array count (items, records, objects, keys, files)
           const CANDIDATE_ARRAY_KEYS = ['items', 'records', 'objects', 'keys', 'files'];
           for (const arrKey of CANDIDATE_ARRAY_KEYS) {
-            const arrVal = params[arrKey] ?? (params.input && typeof params.input === 'object' ? params.input[arrKey] : undefined);
+            const arrVal = verifiedExecutionParams[arrKey] ?? (verifiedExecutionParams.input && typeof verifiedExecutionParams.input === 'object' ? verifiedExecutionParams.input[arrKey] : undefined);
             if (Array.isArray(arrVal)) {
               const arrLen = arrVal.length;
               if (paramsCount !== null && arrLen > paramsCount) {
@@ -555,13 +810,13 @@ export function createExecutionGuard(options = {}) {
           ? paramsCount
           : (requestCount !== null ? requestCount : undefined);
 
-        const effectiveHasSnapshot = params.hasSnapshot !== undefined
-          ? params.hasSnapshot
-          : (params.snapshot !== undefined ? params.snapshot : (request?.hasSnapshot ?? request?.snapshot));
+        const effectiveHasSnapshot = verifiedExecutionParams.hasSnapshot !== undefined
+          ? verifiedExecutionParams.hasSnapshot
+          : (verifiedExecutionParams.snapshot !== undefined ? verifiedExecutionParams.snapshot : (request?.hasSnapshot ?? request?.snapshot));
 
-        const effectiveIsDryRun = params.isDryRun !== undefined
-          ? params.isDryRun
-          : (params.dryRun !== undefined ? params.dryRun : (request?.isDryRun ?? request?.dryRun));
+        const effectiveIsDryRun = verifiedExecutionParams.isDryRun !== undefined
+          ? verifiedExecutionParams.isDryRun
+          : (verifiedExecutionParams.dryRun !== undefined ? verifiedExecutionParams.dryRun : (request?.isDryRun ?? request?.dryRun));
 
         const effectiveRequest = {
           action: normalizedTool,
@@ -571,7 +826,7 @@ export function createExecutionGuard(options = {}) {
           hasSnapshot: effectiveHasSnapshot,
           isDryRun: effectiveIsDryRun,
           justification: request?.justification,
-          parameters: params,
+          parameters: verifiedExecutionParams,
         };
 
         const effectiveContext = context || {
@@ -596,15 +851,7 @@ export function createExecutionGuard(options = {}) {
           );
         }
 
-        // 6. Inject verified immutable binding into execution params
-        const verifiedExecutionParams = Object.freeze({
-          ...params,
-          _authorizedResource: capability.resource,
-          _authorizedAction: capability.action,
-          _authorizedBounds: Object.freeze({ ...capability.constraints }),
-        });
-
-        // 7. Safely execute underlying tool
+        // 6. Safely execute underlying tool using the verified immutable parameters
         return await rawExecutor(verifiedExecutionParams, {
           capability,
           verified: true,

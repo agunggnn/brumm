@@ -70,7 +70,7 @@ export function computeCanonicalSha256(value) {
  * @returns {Readonly<T>}
  */
 export function deepFreeze(obj, seen = new Set()) {
-  if (obj === null || typeof obj !== 'object') {
+  if (obj === null || typeof obj !== 'object' || ArrayBuffer.isView(obj)) {
     return obj;
   }
 
@@ -105,7 +105,7 @@ export function deepFreeze(obj, seen = new Set()) {
  * @returns {boolean}
  */
 export function isDeepFrozen(obj, seen = new Set()) {
-  if (obj === null || typeof obj !== 'object') {
+  if (obj === null || typeof obj !== 'object' || ArrayBuffer.isView(obj)) {
     return true;
   }
 

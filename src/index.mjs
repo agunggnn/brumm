@@ -4,7 +4,10 @@
  * Provides the primary programmatic API: createGuard() and createExecutionGuard()
  */
 
-import { createExecutionGuard } from './adapters/tool-adapter.mjs';
+import {
+  createExecutionGuard,
+  materializeExecutionParams,
+} from './adapters/tool-adapter.mjs';
 import {
   canonicalizeJson,
   computeCanonicalSha256,
@@ -159,6 +162,7 @@ export function createGuard(options = {}) {
 // Re-export core modules & adapters
 export {
   createExecutionGuard,
+  materializeExecutionParams,
   issueCapability,
   verifyCapability,
   consumeCapability,
