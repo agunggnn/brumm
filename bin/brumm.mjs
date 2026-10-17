@@ -6,27 +6,34 @@
 
 import { existsSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { evaluatePolicy } from '../src/core/policy-engine.mjs';
 import { loadPolicyFile } from '../src/core/policy-loader.mjs';
 
 const VERSION = '0.1.0';
+const DEFAULT_BUNDLED_POLICY_PATH = fileURLToPath(new URL('../brumm-policy.yaml', import.meta.url));
 
 const HELP_TEXT = `
 Brumm 🐻🛡️ — The Denial Smart Boss for AI Agents
 Version: ${VERSION}
 
 USAGE:
-  brumm policy test --policy <path> --action <action> --resource <target> [options]
+  brumm policy test --action <action> --resource <target> [options]
+  brumm evaluate --action <action> --resource <target> [options]
   brumm --help
   brumm --version
 
 OPTIONS:
-  -p, --policy <path>     Path to YAML or JSON policy file (default: brumm-policy.yaml)
+  -p, --policy <path>     Path to YAML or JSON policy file (default: ./brumm-policy.yaml or bundled policy)
   -a, --agent <id>        Agent identifier (default: test-agent)
+  -u, --user <id>         User/subject identifier (default: system)
       --action <action>   Action name (e.g. delete, read, deploy, restart)
   -r, --resource <path>   Resource target (e.g. backup-prod/*, /data/prod)
   -s, --size <size>       Requested data volume (e.g. 700GB, 50MB, 1000)
+  -c, --count <count>     Requested object count (non-negative integer)
+      --snapshot          Declare that a pre-execution snapshot exists
+      --dry-run           Declare dry-run simulation mode
   -e, --env <name>        Environment tier (e.g. production, staging, development)
       --json              Output full decision as JSON
   -h, --help              Show this help menu
@@ -35,7 +42,6 @@ OPTIONS:
 EXAMPLES:
   # Simulate cleanup-agent requesting 700GB deletion on production backup
   brumm policy test \\
-    --policy ./policy.yaml \\
     --agent cleanup-agent \\
     --action delete \\
     --resource backup-prod \\
@@ -61,7 +67,7 @@ function main() {
 
   if (subcommand === 'policy' && subArgs[0] === 'test') {
     handlePolicyTest(subArgs.slice(1));
-  } else if (subcommand === 'test') {
+  } else if (subcommand === 'test' || subcommand === 'evaluate') {
     handlePolicyTest(subArgs);
   } else {
     console.error(`Unknown command: "${subcommand}". Run "brumm --help" for usage.`);
@@ -69,10 +75,25 @@ function main() {
   }
 }
 
+function resolvePolicyPath(explicitPolicyOption) {
+  if (explicitPolicyOption) {
+    return resolve(process.cwd(), explicitPolicyOption);
+  }
+  if (process.env.BRUMM_POLICY_PATH) {
+    return resolve(process.cwd(), process.env.BRUMM_POLICY_PATH);
+  }
+  const cwdDefault = resolve(process.cwd(), 'brumm-policy.yaml');
+  if (existsSync(cwdDefault)) {
+    return cwdDefault;
+  }
+  return DEFAULT_BUNDLED_POLICY_PATH;
+}
+
 function handlePolicyTest(args) {
   const options = {
-    policy: { type: 'string', short: 'p', default: 'brumm-policy.yaml' },
+    policy: { type: 'string', short: 'p' },
     agent: { type: 'string', short: 'a', default: 'test-agent' },
+    user: { type: 'string', short: 'u', default: 'system' },
     action: { type: 'string' },
     resource: { type: 'string', short: 'r' },
     size: { type: 'string', short: 's' },
@@ -102,7 +123,7 @@ function handlePolicyTest(args) {
     process.exit(1);
   }
 
-  const policyPath = resolve(process.cwd(), values.policy);
+  const policyPath = resolvePolicyPath(values.policy);
   if (!existsSync(policyPath)) {
     console.error(`Error: Policy file not found: "${policyPath}"`);
     process.exit(1);
@@ -128,6 +149,7 @@ function handlePolicyTest(args) {
   const context = {
     agentId: values.agent,
     environment: values.env,
+    user: values.user,
   };
 
   const decision = evaluatePolicy(compiledPolicy, request, context);

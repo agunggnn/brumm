@@ -14,6 +14,7 @@
   "files": [
     "src",
     "bin",
+    "brumm-policy.yaml",
     "LICENSE",
     "README.md"
   ],

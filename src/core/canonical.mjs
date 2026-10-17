@@ -163,10 +163,13 @@ export function canonicalizeResource(resource, options = {}) {
     };
   }
 
-  // 3. Filesystem / relative path handling
+  // 3. Filesystem / relative path handling (including Windows drive roots like C:\...)
   let normalized = decoded.replace(/\\/g, '/');
-  const isLeadingSlash = normalized.startsWith('/');
-  const segments = normalized.split('/').filter(Boolean);
+  const driveMatch = normalized.match(/^\/?([a-zA-Z]:)(?:\/(.*))?$/);
+  const drivePrefix = driveMatch ? driveMatch[1].toLowerCase() : null;
+  const isLeadingSlash = Boolean(drivePrefix) || normalized.startsWith('/');
+  const pathBody = driveMatch ? (driveMatch[2] || '') : normalized;
+  const segments = pathBody.split('/').filter(Boolean);
   const resolved = [];
   let traversedAboveRoot = false;
 
@@ -188,12 +191,16 @@ export function canonicalizeResource(resource, options = {}) {
     throw new ResourceCanonicalizationError(`Path traversal detected: resource escapes root: "${resource}"`, resource);
   }
 
-  const resolvedPath = (isLeadingSlash ? '/' : '') + resolved.join('/');
-  const finalPath = resolvedPath || (isLeadingSlash ? '/' : '.');
+  const finalPath = drivePrefix
+    ? `${drivePrefix}/${resolved.join('/')}`
+    : (isLeadingSlash ? '/' : '') + resolved.join('/') || (isLeadingSlash ? '/' : '.');
 
   // Enforce baseDir sandbox constraint if specified
   if (options.baseDir) {
-    const base = options.baseDir.replace(/\\/g, '/').replace(/\/+$/, '');
+    const base = options.baseDir
+      .replace(/\\/g, '/')
+      .replace(/^\/?([a-zA-Z]:)/, (_, d) => d.toLowerCase())
+      .replace(/\/+$/, '');
     if (!finalPath.startsWith(base + '/') && finalPath !== base) {
       throw new ResourceCanonicalizationError(
         `Resource substitution detected: path "${finalPath}" is outside base directory "${base}"`,
@@ -205,7 +212,7 @@ export function canonicalizeResource(resource, options = {}) {
   return {
     uri: finalPath,
     scheme: 'path',
-    authority: null,
+    authority: drivePrefix,
     path: finalPath,
     isCanonical: true,
   };
@@ -226,7 +233,9 @@ export function matchResourcePattern(canonicalUri, pattern) {
     return true;
   }
 
-  const normPattern = pattern.replace(/\\/g, '/');
+  const normPattern = pattern
+    .replace(/\\/g, '/')
+    .replace(/^\/?([a-zA-Z]:)/, (_, d) => d.toLowerCase());
 
   let regexStr = normPattern
     .replace(/[.+^${}()|[\]\\]/g, '\\$&')

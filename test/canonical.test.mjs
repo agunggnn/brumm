@@ -45,6 +45,19 @@ describe('Canonical Resource Normalization', () => {
       /Resource substitution detected/
     );
   });
+
+  it('normalizes Windows drive paths and blocks traversal above drive root', () => {
+    const winRes = canonicalizeResource('C:\\Users\\agung\\project\\..\\data\\file.txt', {
+      baseDir: 'C:\\Users\\agung',
+    });
+    assert.equal(winRes.uri, 'c:/Users/agung/data/file.txt');
+    assert.equal(winRes.authority, 'c:');
+
+    assert.throws(
+      () => canonicalizeResource('C:\\Users\\..\\..\\Windows\\System32'),
+      /Path traversal detected/
+    );
+  });
 });
 
 describe('Resource Pattern Matching', () => {
@@ -57,5 +70,6 @@ describe('Resource Pattern Matching', () => {
   it('matches globstar across multiple segments (**)', () => {
     assert.equal(matchResourcePattern('backup-prod/2024/09/db.tar.gz', 'backup-prod/**'), true);
     assert.equal(matchResourcePattern('other-backup/2024', 'backup-prod/**'), false);
+    assert.equal(matchResourcePattern('c:/Users/agung/data/db.sql', 'C:\\Users\\agung\\**'), true);
   });
 });

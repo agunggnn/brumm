@@ -5,6 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, it } from 'node:test';
 
@@ -46,6 +47,59 @@ describe('Brumm CLI Simulator', () => {
 
     assert.match(stdout, /Decision:\s+ALLOW/);
     assert.match(stdout, /Policy:\s+production-safeguards/);
+  });
+
+  it('supports evaluate subcommand alias and bundled default policy from any working directory', () => {
+    const stdout = execFileSync(
+      'node',
+      [
+        BIN_PATH,
+        'evaluate',
+        '--agent',
+        'test-agent',
+        '--user',
+        'operator',
+        '--action',
+        'read',
+        '--resource',
+        '/data/readme.txt',
+        '--env',
+        'production',
+        '--json',
+      ],
+      { cwd: tmpdir(), encoding: 'utf8' }
+    );
+
+    const parsed = JSON.parse(stdout);
+    assert.equal(parsed.outcome, 'ALLOW');
+    assert.equal(parsed.allowed, true);
+  });
+
+  it('returns exit 1 when an explicitly specified --policy file does not exist', () => {
+    assert.throws(
+      () => {
+        execFileSync(
+          'node',
+          [
+            BIN_PATH,
+            'policy',
+            'test',
+            '--policy',
+            './non-existent-policy.yaml',
+            '--action',
+            'read',
+            '--resource',
+            '/data/readme.txt',
+          ],
+          { encoding: 'utf8' }
+        );
+      },
+      err => {
+        assert.equal(err.status, 1);
+        assert.match(err.stderr, /Policy file not found/);
+        return true;
+      }
+    );
   });
 
   it('returns ESCALATE (exit 2) for honest mistake 700GB deletion', () => {
