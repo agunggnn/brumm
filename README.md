@@ -45,6 +45,27 @@ Agent Action Request (e.g. DELETE 700GB / Request AWS Admin Key)
 
 ---
 
+## 🤖 Use Brumm as a Claude Code Skill
+
+Brumm ships as a Claude Code plugin. Once installed, Claude checks destructive actions (`rm -rf`, `DROP TABLE`, `terraform destroy`, `kubectl delete`, prod deploys) with Brumm before it runs them. Requires Node.js 22.5+ (`brew install node` on macOS).
+
+Inside Claude Code:
+
+```text
+/plugin install brumm --marketplace agunggnn/brumm
+```
+
+On older Claude Code versions, use two steps:
+
+```text
+/plugin marketplace add agunggnn/brumm
+/plugin install brumm@brumm
+```
+
+Try it: *"Use brumm to check: delete /data/db in production."* To use your own rules, put a `brumm-policy.yaml` in your project folder or set `BRUMM_POLICY_PATH`.
+
+---
+
 ## 🚀 Quickstart
 
 ### 1. Run Policy Simulation CLI

@@ -1,0 +1,9 @@
+{
+  "name": "brumm",
+  "version": "0.1.0",
+  "description": "Denial Smart Boss for AI agents: checks destructive actions against a Brumm policy before Claude runs them.",
+  "author": { "name": "Agung" },
+  "repository": "https://github.com/agunggnn/brumm",
+  "license": "Apache-2.0",
+  "keywords": ["agentic-safety", "blast-radius", "policy", "guardrails"]
+}
