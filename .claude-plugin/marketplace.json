@@ -1,0 +1,16 @@
+{
+  "name": "brumm",
+  "owner": {
+    "name": "Agung"
+  },
+  "metadata": {
+    "description": "Brumm agentic-safety skill for Claude Code"
+  },
+  "plugins": [
+    {
+      "name": "brumm",
+      "source": "./",
+      "description": "Denial Smart Boss for AI agents: checks destructive actions against a Brumm policy before Claude runs them."
+    }
+  ]
+}
